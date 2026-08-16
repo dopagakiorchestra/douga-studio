@@ -287,10 +287,11 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const bloom = 1 + bass * 0.55;
   // グローの強さも音量で息をさせる。ただしリング自体は常に見えるよう下限を残す。
   const shine = 0.55 + 0.45 * energy;
-  glowPass(neonSoft, innerR * 0.05, innerR * 0.34 * bloom, 0.45 * shine);
-  glowPass(neonSoft, innerR * 0.04, innerR * 0.16 * bloom, 0.55 * shine);
-  glowPass(neon, innerR * 0.028, innerR * 0.06, 0.9 * shine);
-  glowPass("#ffffff", innerR * 0.018, innerR * 0.025, 1);
+  // 色の帯を白芯よりはっきり太くする。細いと芯の白に負けて色相が読めない。
+  glowPass(neonSoft, innerR * 0.095, innerR * 0.34 * bloom, 0.45 * shine);
+  glowPass(neonSoft, innerR * 0.075, innerR * 0.16 * bloom, 0.55 * shine);
+  glowPass(neon, innerR * 0.07, innerR * 0.06, 0.9 * shine);
+  glowPass("#ffffff", innerR * 0.026, innerR * 0.025, 1);
 
   // 線上を走る針状のヒゲ（時間波形の速い成分）
   ctx.globalAlpha = 0.92;
