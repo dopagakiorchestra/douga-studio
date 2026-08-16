@@ -18,7 +18,7 @@ import {
   Upload,
   Waves,
 } from "lucide-react";
-import { createRingState, drawRing, RING_INNER_RATIO, type RingMetrics } from "@/lib/ringVisualizer";
+import { createRingState, drawRing, hueAt, neonColor, RING_INNER_RATIO, type RingMetrics } from "@/lib/ringVisualizer";
 
 const styles = [
   { id: "bars", label: "Spectrum", icon: Radio, desc: "縦方向のスペクトラム" },
@@ -111,7 +111,8 @@ export default function Home() {
       const bass = fft ? fft.slice(0, 12).reduce((a, b) => a + b, 0) / (12 * 255) : .18;
       const treble = fft ? fft.slice(40, 90).reduce((a, b) => a + b, 0) / (50 * 255) : .2;
       if (bgImageRef.current) { ctx.globalAlpha = .72; ctx.drawImage(bgImageRef.current, 0, 0, w, h); ctx.fillStyle = "rgba(0,0,0,.28)"; ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1; }
-      const accent = vizColor;
+      // 横線も二重円リングと同じ、時間で一周する色相を使う
+      const accent = neonColor(hueAt(time));
       ctx.shadowColor = accent; ctx.shadowBlur = 20; ctx.strokeStyle = accent; ctx.fillStyle = accent; ctx.lineWidth = 2;
       if (vizStyle === "line") {
         ctx.beginPath();

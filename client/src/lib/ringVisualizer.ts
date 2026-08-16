@@ -18,6 +18,15 @@ export const RING_OUTER_SCALE = 1.9;
 export const RING_OUTER_RATIO = RING_INNER_RATIO * RING_OUTER_SCALE;
 /** レインボーが一周する時間（ミリ秒）。 */
 export const RING_HUE_PERIOD = 2880;
+
+/** 経過時間から色相を求める。二重円リングと横線で同じ回り方をさせる。 */
+export const hueAt = (time: number) => (((time / (RING_HUE_PERIOD / 360)) % 360) + 360) % 360;
+
+/** 色相からネオン色を作る。 */
+export const neonColor = (hue: number, lightness = 58, alpha = 1) =>
+  alpha >= 1
+    ? `hsl(${hue.toFixed(1)}, 100%, ${lightness}%)`
+    : `hsla(${hue.toFixed(1)}, 100%, ${lightness}%, ${alpha})`;
 /**
  * 帯域の割り当てが円を一周する時間（ミリ秒）。
  * 固定だとキックのアタックが毎回同じ位置で跳ねてしまうので、
@@ -255,9 +264,9 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const hairScale = state.detailReference > 1e-4 ? 1 / state.detailReference : 0;
 
   const bass = (playing && fft?.length ? fft.slice(1, 10).reduce((a, b) => a + b, 0) / (9 * 255) : 0) * energy;
-  const hue = ((time / (RING_HUE_PERIOD / 360)) % 360 + 360) % 360;
-  const neon = `hsl(${hue.toFixed(1)}, 100%, 58%)`;
-  const neonSoft = `hsla(${hue.toFixed(1)}, 100%, 60%, 0.55)`;
+  const hue = hueAt(time);
+  const neon = neonColor(hue);
+  const neonSoft = neonColor(hue, 60, 0.55);
 
   ctx.save();
   ctx.translate(width / 2, height / 2);
