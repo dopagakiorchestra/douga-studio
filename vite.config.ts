@@ -206,6 +206,9 @@ function vitePluginStorageProxy(): Plugin {
 const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector(), vitePluginStorageProxy()];
 
 export default defineConfig({
+  // GitHub Pages はリポジトリ名のサブパス配下で配信されるので、
+  // その場合だけ PAGES_BASE を渡して資産の参照先を合わせる。
+  base: process.env.PAGES_BASE || "/",
   plugins,
   resolve: {
     alias: {
