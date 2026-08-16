@@ -145,10 +145,14 @@ export default function Home() {
       const fft = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
       const timeData = analyser ? new Uint8Array(analyser.fftSize) : null;
       if (analyser && fft && timeData) { analyser.getByteFrequencyData(fft); analyser.getByteTimeDomainData(timeData); }
+      // 高さは表示boxではなくキャンバスから決める。9:16 では max-height が
+      // 効いて表示boxの縦横比がキャンバスと変わるため、表示boxの高さを
+      // そのまま使うと描画がキャンバスの中心からずれる。
+      const scale = canvas.width / rect.width;
       const metrics = drawFrame(ctx, {
         width: rect.width,
-        height: rect.height,
-        scale: canvas.width / rect.width,
+        height: canvas.height / scale,
+        scale,
         fft,
         wave: timeData,
         playing,
