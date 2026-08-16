@@ -11,13 +11,19 @@
 const TAU = Math.PI * 2;
 
 /** キャンバス短辺に対する内側リング半径の比率。 */
-export const RING_INNER_RATIO = 0.15;
+export const RING_INNER_RATIO = 0.075;
 /** 内側リングに対する外側リングの倍率。 */
 export const RING_OUTER_SCALE = 1.9;
 /** キャンバス短辺に対する外側リング半径の比率。 */
 export const RING_OUTER_RATIO = RING_INNER_RATIO * RING_OUTER_SCALE;
 /** レインボーが一周する時間（ミリ秒）。 */
 export const RING_HUE_PERIOD = 2880;
+/**
+ * 帯域の割り当てが円を一周する時間（ミリ秒）。
+ * 固定だとキックのアタックが毎回同じ位置で跳ねてしまうので、
+ * 帯域と角度の対応をゆっくり回して、反応する場所を移動させる。
+ */
+export const RING_BAND_DRIFT_PERIOD = 18000;
 
 export type RingMetrics = { min: number; max: number };
 
@@ -79,12 +85,14 @@ const createSpectrum = (fft: Uint8Array | null, playing: boolean) => {
 /**
  * 内側リングの形を作る低次ハーモニクスの重み。
  * 角度の周期関数の和なので、どんな音でも継ぎ目なく閉じた丸い線になる。
+ * spin は 1 秒あたりの回転数。それぞれ速さと向きを変えてあるので、
+ * 全体が硬く回らず、うねりが常に組み変わりながら動く。
  */
 const SHAPE_HARMONICS = [
-  { order: 2, band: 0.04, phase: 0 },
-  { order: 3, band: 0.13, phase: 1.1 },
-  { order: 5, band: 0.28, phase: 2.4 },
-  { order: 7, band: 0.5, phase: 3.9 },
+  { order: 2, band: 0.04, phase: 0, spin: 0.055 },
+  { order: 3, band: 0.13, phase: 1.1, spin: -0.038 },
+  { order: 5, band: 0.28, phase: 2.4, spin: 0.026 },
+  { order: 7, band: 0.5, phase: 3.9, spin: -0.017 },
 ];
 
 /**
@@ -156,8 +164,8 @@ const pointOnPolygon = (points: Point[], t: number): Point => {
 const INNER_POINTS = 512;
 /** 外側リングの角数。参照映像に合わせてはっきり多角形に見える粗さにする。 */
 const OUTER_SIDES = 16;
-/** 外周の目盛り本数。 */
-const TICK_COUNT = 288;
+/** 外周の目盛り本数。参照映像の角度密度（約1.7度おき）に合わせる。 */
+const TICK_COUNT = 208;
 /** これ未満の帯域は点だけを打つ。 */
 const TICK_DOT_THRESHOLD = 0.09;
 /** ヒゲが伸びる最大量（内側半径比）。 */
@@ -170,11 +178,20 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const outerR = shortest * RING_OUTER_RATIO;
   const react = Math.max(0.35, Math.min(2.4, sensitivity));
 
-  const detailAt = createSpectrum(fft, playing);
-  // 内側の形は帯域ごとの強さを低次ハーモニクスの振幅に割り当てて作る
-  const harmonics = SHAPE_HARMONICS.map((h) => ({ ...h, gain: detailAt(h.band) }));
+  const seconds = time / 1000;
+  // 帯域と角度の対応をゆっくり回す。キックのアタックを担当する位置が
+  // 一箇所に固定されず、円周をまわりながら跳ねるようになる。
+  const bandDrift = playing ? time / RING_BAND_DRIFT_PERIOD : 0;
+  const spectrum = createSpectrum(fft, playing);
+  const detailAt = (t: number) => spectrum(t - bandDrift);
+  // 内側の形は帯域ごとの強さを低次ハーモニクスの振幅に割り当てて作る。
+  // ハーモニクスごとに向きと速さの違う回転を与え、うねりが組み変わり続けるようにする。
+  const harmonics = SHAPE_HARMONICS.map((h) => ({ ...h, gain: spectrum(h.band) }));
   const shapeAt = (t: number) =>
-    harmonics.reduce((sum, h) => sum + h.gain * Math.cos(TAU * h.order * t + h.phase), 0) / harmonics.length;
+    harmonics.reduce(
+      (sum, h) => sum + h.gain * Math.cos(TAU * (h.order * t + h.spin * seconds) + h.phase),
+      0,
+    ) / harmonics.length;
   const hair = createWaveDetail(wave, playing);
   const bass = playing && fft?.length ? fft.slice(1, 10).reduce((a, b) => a + b, 0) / (9 * 255) : 0;
   const hue = ((time / (RING_HUE_PERIOD / 360)) % 360 + 360) % 360;
@@ -266,8 +283,12 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const floor = (sum / TICK_COUNT) * 0.6;
   const span = Math.max(0.15, 1 - floor);
 
-  ctx.lineWidth = 1;
+  // 目盛りの太さ・点の大きさは間隔に対する比で決める。
+  // リング径を変えても線が詰まって帯にならず、抜け感が保たれる。
+  const spacing = (TAU * outerR) / TICK_COUNT;
+  ctx.lineWidth = Math.max(0.5, spacing * 0.26);
   ctx.fillStyle = "#ffffff";
+  const dotRadius = Math.max(0.35, spacing * 0.22);
   for (let i = 0; i < TICK_COUNT; i++) {
     const emphasis = Math.max(0, levels[i] - floor) / span;
     const base = pointOnPolygon(outerPoints, i / TICK_COUNT);
@@ -277,7 +298,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
     if (emphasis < TICK_DOT_THRESHOLD) {
       ctx.globalAlpha = 0.85;
       ctx.beginPath();
-      ctx.arc(base.x, base.y, Math.max(0.9, outerR * 0.006), 0, TAU);
+      ctx.arc(base.x, base.y, dotRadius, 0, TAU);
       ctx.fill();
       continue;
     }
