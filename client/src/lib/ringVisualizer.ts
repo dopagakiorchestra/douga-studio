@@ -4,7 +4,7 @@
  * 参照デザイン:
  * - 内側 … なめらかな円。細い白芯 + 時間で色相が回るレインボーのブルーム。
  *          線上には時間波形の速い成分だけを取り出した細い針状のヒゲが房状に走る。
- * - 外側 … 内側の約1.9倍径の 1px 白のなめらかな円。
+ * - 外側 … 内側の約1.9倍径の 1px のなめらかな円（色は指定可）。
  *          全周に目盛りが並び、強い帯域ほど長いトゲが伸びる。
  */
 
@@ -27,6 +27,16 @@ export const neonColor = (hue: number, lightness = 58, alpha = 1) =>
   alpha >= 1
     ? `hsl(${hue.toFixed(1)}, 100%, ${lightness}%)`
     : `hsla(${hue.toFixed(1)}, 100%, ${lightness}%, ${alpha})`;
+
+/** #RRGGBB / #RGB を rgba() 文字列へ変換する。 */
+export const withAlpha = (color: string, alpha: number) => {
+  const hex = color.trim().replace("#", "");
+  const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
+  const value = Number.parseInt(full, 16);
+  if (full.length !== 6 || Number.isNaN(value)) return color;
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+};
+
 /**
  * 帯域の割り当てが円を一周する時間（ミリ秒）。
  * 固定だとキックのアタックが毎回同じ位置で跳ねてしまうので、
@@ -90,6 +100,10 @@ export type RingOptions = {
   time: number;
   /** 反応量の倍率（感度スライダー）。 */
   sensitivity: number;
+  /** 内側リングの色。null なら時間で一周するレインボー。 */
+  innerColor: string | null;
+  /** 外側リングと目盛りの色。 */
+  outerColor: string;
   /** 音量追従の状態。呼び出し側で使い回す。 */
   state: RingState;
 };
@@ -227,6 +241,7 @@ const HAIR_EXPONENT = 1.35;
 
 export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): RingMetrics {
   const { width, height, glowScale, fft, wave, playing, time, sensitivity, state } = options;
+  const { innerColor, outerColor } = options;
   const shortest = Math.min(width, height);
   const innerR = shortest * RING_INNER_RATIO;
   const outerR = shortest * RING_OUTER_RATIO;
@@ -265,8 +280,8 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
 
   const bass = (playing && fft?.length ? fft.slice(1, 10).reduce((a, b) => a + b, 0) / (9 * 255) : 0) * energy;
   const hue = hueAt(time);
-  const neon = neonColor(hue);
-  const neonSoft = neonColor(hue, 60, 0.55);
+  const neon = innerColor ?? neonColor(hue);
+  const neonSoft = innerColor ? withAlpha(innerColor, 0.55) : neonColor(hue, 60, 0.55);
 
   ctx.save();
   ctx.translate(width / 2, height / 2);
@@ -354,7 +369,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const outerPoints = buildPolygon(outerRadii);
 
   ctx.globalAlpha = 0.95;
-  ctx.strokeStyle = "#ffffff";
+  ctx.strokeStyle = outerColor;
   ctx.lineWidth = 1;
   ctx.shadowBlur = 0;
   ctx.beginPath();
