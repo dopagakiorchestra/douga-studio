@@ -14,6 +14,7 @@ import {
   Play,
   Radio,
   RotateCcw,
+  Share2,
   Sparkles,
   Upload,
   Waves,
@@ -75,6 +76,7 @@ export default function Home() {
   const [exportRemaining, setExportRemaining] = useState(0);
   const [exportUrl, setExportUrl] = useState("");
   const [exportFilename, setExportFilename] = useState("music-video.webm");
+  const [canShareFile, setCanShareFile] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -86,6 +88,8 @@ export default function Home() {
   const bgImageRef = useRef<HTMLImageElement | null>(null);
   const ringMetricsRef = useRef<RingMetrics>({ min: 0, max: 0 });
   const ringStateRef = useRef(createRingState());
+  const exportUrlRef = useRef<string>("");
+  const exportFileRef = useRef<File | null>(null);
 
   useEffect(() => {
     const stopPlayback = () => { const audio = audioRef.current; if (audio) { audio.pause(); audio.currentTime = 0; } if (audioContextRef.current && audioContextRef.current.state !== "closed") audioContextRef.current.suspend(); setPlaying(false); };
@@ -222,6 +226,17 @@ export default function Home() {
     return litCore && glowOutside && responsive;
   };
 
+  /** iOS の「ビデオを保存」「ファイルに保存」はここから辿れる。 */
+  const shareVideo = async () => {
+    const file = exportFileRef.current;
+    if (!file) return;
+    try {
+      await navigator.share({ files: [file], title: title || "music-video" });
+    } catch (error) {
+      if ((error as Error).name !== "AbortError") toast.error("共有シートを開けませんでした");
+    }
+  };
+
   const exportVideo = async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -244,7 +259,25 @@ export default function Home() {
     const stopAfter = Math.min((clipLength || audio?.duration || 12) * 1000, 120000);
     const startedAt = performance.now();
     const remainingTimer = window.setInterval(() => { setExportRemaining(Math.max(0, Math.ceil((stopAfter - (performance.now() - startedAt)) / 1000))); }, 250);
-    recorder.onstop = () => { window.clearInterval(remainingTimer); setExportRemaining(0); const blob = new Blob(chunks, { type: mime }); const extension = mime.includes("mp4") ? "mp4" : "webm"; const filename = `${title || "music-video"}.${extension}`; const objectUrl = URL.createObjectURL(blob); const finish = (url: string) => { setExportUrl(url); setExportFilename(filename); setExporting(false); toast.success("動画を書き出しました。ダウンロードボタンから保存できます"); }; if (isIOSDevice) { const reader = new FileReader(); reader.onloadend = () => finish(typeof reader.result === "string" ? reader.result : objectUrl); reader.readAsDataURL(blob); } else { finish(objectUrl); } };
+    recorder.onstop = () => {
+      window.clearInterval(remainingTimer);
+      setExportRemaining(0);
+      const blob = new Blob(chunks, { type: mime });
+      const extension = mime.includes("mp4") ? "mp4" : "webm";
+      const filename = `${title || "music-video"}.${extension}`;
+      // 以前は iOS だけ data URL に変換していたが、Safari は巨大な data URL の
+      // ダウンロードに弱い。Blob URL は iOS 13 以降で保存できるので統一する。
+      if (exportUrlRef.current) URL.revokeObjectURL(exportUrlRef.current);
+      exportUrlRef.current = URL.createObjectURL(blob);
+      const file = new File([blob], filename, { type: mime });
+      exportFileRef.current = file;
+      // iOS で確実なのは共有シート経由の保存。使える環境でだけボタンを出す。
+      setCanShareFile(typeof navigator.canShare === "function" && navigator.canShare({ files: [file] }));
+      setExportUrl(exportUrlRef.current);
+      setExportFilename(filename);
+      setExporting(false);
+      toast.success("動画を書き出しました。ダウンロードボタンから保存できます");
+    };
     if (audio) { audio.currentTime = trimStart; await audio.play(); setPlaying(true); }
     if (vizStyle === "ring") { await new Promise((resolve) => window.setTimeout(resolve, 120)); if (!validateRingFrame()) { audio?.pause(); setPlaying(false); setExporting(false); toast.error("出力前チェック未達: グローまたは全周トゲの反応を確認してください"); return; } }
     recorder.start(250);
@@ -262,7 +295,7 @@ export default function Home() {
         <section className="panel-section"><div className="section-label"><Library size={14} /> 情報</div><label>曲名<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="曲名を入力" /></label><label>アーティスト名<input value={artist} onChange={(e) => setArtist(e.target.value)} placeholder="アーティスト名を入力" /></label><label>ジャンル<input value={genre} onChange={(e) => setGenre(e.target.value)} placeholder="Instrumental" /></label></section>
       </aside>
       <section className="preview-stage"><div className="stage-head"><div><div className="rail-kicker">02 / PREVIEW</div><h1>音を置く。画を決める。</h1></div><div className="stage-meta"><span className="live-dot" /> LIVE CANVAS<br /><small>{aspect === "portrait" ? "1080 × 1920" : "1920 × 1080"}</small></div></div><div className={`canvas-wrap ${vizStyle === "ring" ? "ring-preview" : ""}`}><canvas ref={canvasRef} /></div><div className="transport"><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><div className="transport-track">{duration > 0 && <div className="transport-range" style={{ left: `${(trimStart / duration) * 100}%`, width: `${(clipLength / duration) * 100}%` }} />}<div className="transport-progress" style={{ width: `${duration ? (progress / duration) * 100 : 0}%` }} /><input type="range" min="0" max={duration || 1} value={progress} onChange={(e) => { const value = Number(e.target.value); setProgress(value); if (audioRef.current) audioRef.current.currentTime = value; }} /></div><span className="timecode">{formatTime(progress)} <i>/</i> {formatTime(duration)}</span><audio ref={audioRef} src={audioUrl} /></div>{duration > 0 && <div className="trim-panel"><div className="trim-head"><span>書き出し範囲</span><b>{formatTime(trimStart)} → {formatTime(clipEnd)}</b><em>{formatTime(Math.round(clipLength))}</em></div><label>開始<input type="range" min={0} max={duration} step={0.1} value={trimStart} onChange={(e) => { const value = Math.min(Number(e.target.value), clipEnd - MIN_CLIP); setTrimStart(Math.max(0, value)); if (audioRef.current && audioRef.current.currentTime < value) audioRef.current.currentTime = value; }} /></label><label>終了<input type="range" min={0} max={duration} step={0.1} value={clipEnd} onChange={(e) => setTrimEnd(Math.min(duration, Math.max(Number(e.target.value), trimStart + MIN_CLIP)))} /></label></div>}<div className="preview-caption"><span>{aspect === "portrait" ? "ショート / 1080 × 1920" : "フルHD / 1920 × 1080"} · BLACK BACKGROUND</span><span>{genre || "Instrumental"} <b>·</b> {audioName !== "音源が選択されていません" ? audioName : "no source"}</span></div></section>
-      <aside className="right-rail"><div className="rail-kicker">03 / VISUALIZER</div><section className="panel-section"><div className="section-title">出力サイズ</div><div className="format-row size-row"><button className={aspect === "landscape" ? "active" : ""} onClick={() => setAspect("landscape")}>16:9 <small>フルHD</small></button><button className={aspect === "portrait" ? "active" : ""} onClick={() => setAspect("portrait")}>9:16 <small>ショート</small></button></div><div className="section-title">ビジュアライザー</div><div className="viz-style-switch"><button className={`viz-style-option ${vizStyle === "line" ? "selected" : ""}`} onClick={() => setVizStyle("line")}><Waves size={18} /><span>横線</span><small>穏やかな波形</small>{vizStyle === "line" && <Check size={14} />}</button><button className={`viz-style-option ${vizStyle === "ring" ? "selected" : ""}`} onClick={() => setVizStyle("ring")}><Radio size={18} /><span>二重円リング</span><small>放射状スペクトラム</small>{vizStyle === "ring" && <Check size={14} />}</button></div></section><section className="panel-section"><div className="section-title">{vizStyle === "ring" ? "内側リングの色" : "ラインの色"}</div><ColorPalette value={vizColor} onChange={setVizColor} />{vizStyle === "ring" && <><div className="section-title palette-gap">外側リングの色</div><ColorPalette value={outerColor} onChange={setOuterColor} /></>}<div className="fft-note"><AudioLines size={13} /> HIGH SENSITIVITY · 256 BAND FFT</div><div className="parameter-stack"><label>感度 <output>{sensitivity.toFixed(2)}</output><input type="range" min="0.1" max="2.4" step="0.05" value={sensitivity} onChange={(e) => setSensitivity(Number(e.target.value))} /></label><label>振幅の大きさ <output>{Math.round(amplitude * 100)}%</output><input type="range" min="0.25" max="1.2" step="0.05" value={amplitude} onChange={(e) => setAmplitude(Number(e.target.value))} /></label><label>うねりの強さ <output>{Math.round(wobble * 100)}%</output><input type="range" min="0" max="1" step="0.02" value={wobble} onChange={(e) => setWobble(Number(e.target.value))} /></label><label>線の太さ <output>{lineWeight.toFixed(1)}px</output><input type="range" min="0.4" max="3" step="0.1" value={lineWeight} onChange={(e) => setLineWeight(Number(e.target.value))} /></label></div></section><div className="export-card"><div className="export-orbit"><MonitorPlay size={22} /></div><div className="rail-kicker">EXPORT READY</div><h2>映像を書き出す</h2><p>音声とビジュアライザーを一枚の動画にまとめます。</p><div className="format-row"><button className={format === "webm" ? "active" : ""} onClick={() => setFormat("webm")}>WebM <small>推奨</small></button><button className={format === "mp4" ? "active" : ""} onClick={() => setFormat("mp4")}>MP4</button></div><button className="export-button" onClick={exportVideo} disabled={exporting}>{exporting ? <><span className="spinner" /> 書き出し中… 残り約 {exportRemaining}秒</> : <><Download size={17} /> {format.toUpperCase()} を書き出す</>}</button><div className="export-note"><span className="status-dot" /> ブラウザ内で処理 · ファイルは保存されません</div>{exportUrl && <div className="export-result"><video className="export-video-preview" src={exportUrl} controls playsInline preload="metadata" /><p>{isIOSDevice ? "ダウンロードボタンで保存できない場合は、動画を画面録画してください" : "プレビューを確認してダウンロードできます"}</p><a className="export-download-link" href={exportUrl} download={exportFilename}><Download size={14} /> 動画をダウンロード</a></div>}</div><div className="shortcut-note"><Music2 size={15} /><span>ヒント<br /><b>音源を選んで、再生しながらスタイルを試してみましょう。</b></span></div></aside>
+      <aside className="right-rail"><div className="rail-kicker">03 / VISUALIZER</div><section className="panel-section"><div className="section-title">出力サイズ</div><div className="format-row size-row"><button className={aspect === "landscape" ? "active" : ""} onClick={() => setAspect("landscape")}>16:9 <small>フルHD</small></button><button className={aspect === "portrait" ? "active" : ""} onClick={() => setAspect("portrait")}>9:16 <small>ショート</small></button></div><div className="section-title">ビジュアライザー</div><div className="viz-style-switch"><button className={`viz-style-option ${vizStyle === "line" ? "selected" : ""}`} onClick={() => setVizStyle("line")}><Waves size={18} /><span>横線</span><small>穏やかな波形</small>{vizStyle === "line" && <Check size={14} />}</button><button className={`viz-style-option ${vizStyle === "ring" ? "selected" : ""}`} onClick={() => setVizStyle("ring")}><Radio size={18} /><span>二重円リング</span><small>放射状スペクトラム</small>{vizStyle === "ring" && <Check size={14} />}</button></div></section><section className="panel-section"><div className="section-title">{vizStyle === "ring" ? "内側リングの色" : "ラインの色"}</div><ColorPalette value={vizColor} onChange={setVizColor} />{vizStyle === "ring" && <><div className="section-title palette-gap">外側リングの色</div><ColorPalette value={outerColor} onChange={setOuterColor} /></>}<div className="fft-note"><AudioLines size={13} /> HIGH SENSITIVITY · 256 BAND FFT</div><div className="parameter-stack"><label>感度 <output>{sensitivity.toFixed(2)}</output><input type="range" min="0.1" max="2.4" step="0.05" value={sensitivity} onChange={(e) => setSensitivity(Number(e.target.value))} /></label><label>振幅の大きさ <output>{Math.round(amplitude * 100)}%</output><input type="range" min="0.25" max="1.2" step="0.05" value={amplitude} onChange={(e) => setAmplitude(Number(e.target.value))} /></label><label>うねりの強さ <output>{Math.round(wobble * 100)}%</output><input type="range" min="0" max="1" step="0.02" value={wobble} onChange={(e) => setWobble(Number(e.target.value))} /></label><label>線の太さ <output>{lineWeight.toFixed(1)}px</output><input type="range" min="0.4" max="3" step="0.1" value={lineWeight} onChange={(e) => setLineWeight(Number(e.target.value))} /></label></div></section><div className="export-card"><div className="export-orbit"><MonitorPlay size={22} /></div><div className="rail-kicker">EXPORT READY</div><h2>映像を書き出す</h2><p>音声とビジュアライザーを一枚の動画にまとめます。</p><div className="format-row"><button className={format === "webm" ? "active" : ""} onClick={() => setFormat("webm")}>WebM <small>推奨</small></button><button className={format === "mp4" ? "active" : ""} onClick={() => setFormat("mp4")}>MP4</button></div><button className="export-button" onClick={exportVideo} disabled={exporting}>{exporting ? <><span className="spinner" /> 書き出し中… 残り約 {exportRemaining}秒</> : <><Download size={17} /> {format.toUpperCase()} を書き出す</>}</button><div className="export-note"><span className="status-dot" /> ブラウザ内で処理 · ファイルは保存されません</div>{exportUrl && <div className="export-result"><video className="export-video-preview" src={exportUrl} controls playsInline preload="metadata" /><p>{isIOSDevice ? "「共有して保存」から「ビデオを保存」または「\"ファイル\"に保存」を選べます" : "プレビューを確認してダウンロードできます"}</p>{canShareFile && <button className="export-share-button" onClick={shareVideo}><Share2 size={14} /> 共有して保存</button>}<a className="export-download-link" href={exportUrl} download={exportFilename}><Download size={14} /> 動画をダウンロード</a></div>}</div><div className="shortcut-note"><Music2 size={15} /><span>ヒント<br /><b>音源を選んで、再生しながらスタイルを試してみましょう。</b></span></div></aside>
     </main>
   </div>;
 }
