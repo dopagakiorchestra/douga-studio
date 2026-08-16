@@ -1,0 +1,59 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    # Pages を有効にすると github-pages 環境が作られ、既定ではデフォルト
+    # ブランチからしかデプロイできない。他ブランチを入れてもランナーが
+    # 割り当てられず失敗するだけなので、main だけを対象にする。
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 公開は同時に1つだけ。走行中のものは新しい方を優先する。
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+        env:
+          # Pages はリポジトリ名のサブパスで配信されるため、その下を基準にする
+          PAGES_BASE: /${{ github.event.repository.name }}/
+
+      # 解析タグは Manus の環境変数前提。Pages では未置換のまま残って
+      # 404 になるだけなので、公開する成果物からは外す（元ファイルは触らない）。
+      - name: Drop the analytics tag
+        run: sed -i 's|<script defer src="%VITE_ANALYTICS_ENDPOINT%/umami"[^>]*></script>||' dist/public/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
