@@ -2,8 +2,10 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    # 動作確認用のブランチからも公開する。main へ取り込んだら削っていい。
-    branches: [main, claude/circular-spectrum-reference-nblpte]
+    # Pages を有効にすると github-pages 環境が作られ、既定ではデフォルト
+    # ブランチからしかデプロイできない。他ブランチを入れてもランナーが
+    # 割り当てられず失敗するだけなので、main だけを対象にする。
+    branches: [main]
   workflow_dispatch:
 
 permissions:
