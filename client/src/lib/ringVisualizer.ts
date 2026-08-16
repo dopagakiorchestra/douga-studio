@@ -4,8 +4,8 @@
  * 参照デザイン:
  * - 内側 … なめらかな円。細い白芯 + 時間で色相が回るレインボーのブルーム。
  *          線上には時間波形の速い成分だけを取り出した細い針状のヒゲが房状に走る。
- * - 外側 … 内側の約1.9倍径の 1px 白ローポリ（16角形）。
- *          全周に目盛りが並び、弱い帯域は点、強い帯域だけ長いトゲが伸びる。
+ * - 外側 … 内側の約1.9倍径の 1px 白のなめらかな円。
+ *          全周に目盛りが並び、強い帯域ほど長いトゲが伸びる。
  */
 
 const TAU = Math.PI * 2;
@@ -27,6 +27,44 @@ export const RING_BAND_DRIFT_PERIOD = 18000;
 
 export type RingMetrics = { min: number; max: number };
 
+/**
+ * 音量追従の状態。フレームをまたいで保持する。
+ *
+ * 1フレームぶんの音（約6ms）だけを見て正規化すると、静かになっても
+ * その場のピークまで持ち上がってしまい、強弱がまったく出ない。
+ * そこで「その曲が大きいときの値」を基準として覚えておき、
+ * 現在の音をその基準との比で見ることで、弱くなったぶんだけ絵も弱くする。
+ */
+export type RingState = {
+  /** 短いリリースでならした現在の音量。 */
+  level: number;
+  /** ゆっくり減衰する音量の基準。 */
+  reference: number;
+  /** 同じく、ヒゲ用（波形の速い成分）の基準。 */
+  detailReference: number;
+  /** 前回描画した時刻（ミリ秒）。 */
+  lastTime: number;
+};
+
+export const createRingState = (): RingState => ({
+  level: 0,
+  reference: 0,
+  detailReference: 0,
+  lastTime: 0,
+});
+
+/** 音量の基準が半分まで下がるのにかかる時間（ミリ秒）。 */
+const LOUDNESS_HALF_LIFE = 3500;
+/** コマごとのばらつきをならすリリースの半減期（ミリ秒）。 */
+const LEVEL_RELEASE_HALF_LIFE = 240;
+/** これ以下の音量は無音として扱う（RMS）。 */
+const SILENCE_RMS = 0.004;
+/**
+ * 音量比にかける指数。1 より大きいほど、少し弱くなっただけで
+ * 大きく小さくなる＝弱さに敏感になる。
+ */
+const LOUDNESS_EXPONENT = 1.35;
+
 export type RingOptions = {
   /** 描画座標系での幅・高さ（CSS ピクセル）。 */
   width: number;
@@ -43,6 +81,8 @@ export type RingOptions = {
   time: number;
   /** 反応量の倍率（感度スライダー）。 */
   sensitivity: number;
+  /** 音量追従の状態。呼び出し側で使い回す。 */
+  state: RingState;
 };
 
 const smoothstep = (t: number) => t * t * (3 - 2 * t);
@@ -104,36 +144,55 @@ const SHAPE_HARMONICS = [
  */
 const createWaveDetail = (wave: Uint8Array | null, playing: boolean) => {
   const length = wave?.length ?? 0;
-  if (!playing || !wave || length === 0) return { at: () => 0, drive: 0 };
+  if (!playing || !wave || length === 0) return { at: () => 0, peak: 0, rms: 0 };
   // 移動平均を引いたハイパス。窓が狭すぎると超高域しか拾えないので、
   // 中高域のアタックにも反応する幅にする。
   const radius = Math.max(2, Math.round(length / 42));
   const taps = radius * 2 + 1;
   const detail = new Float32Array(length);
   let peak = 0;
+  let square = 0;
   for (let i = 0; i < length; i++) {
     let sum = 0;
     for (let k = -radius; k <= radius; k++) sum += wave[((i + k) % length + length) % length];
     detail[i] = (wave[i] - sum / taps) / 128;
     peak = Math.max(peak, Math.abs(detail[i]));
+    const sample = (wave[i] - 128) / 128;
+    square += sample * sample;
   }
-  // フレーム内のピークで正規化する。音量の小さい曲でもヒゲが出るようにしつつ、
-  // 無音では drive が 0 に落ちてリングが静止する。
-  const scale = 1 / Math.max(peak, 1e-4);
+  // ここでは正規化しない。生の大きさのまま返し、
+  // 曲全体の基準との比較は呼び出し側（音量追従）に任せる。
   return {
-    drive: Math.min(1, peak / 0.05),
+    peak,
+    rms: Math.sqrt(square / length),
     at: (t: number) => {
       const position = (((t % 1) + 1) % 1) * length;
       const index = Math.floor(position);
       const fraction = position - index;
-      return (detail[index % length] * (1 - fraction) + detail[(index + 1) % length] * fraction) * scale;
+      return detail[index % length] * (1 - fraction) + detail[(index + 1) % length] * fraction;
     },
   };
 };
 
+/** 配列を円環として移動平均する。継ぎ目なく、なめらかな輪郭を作る。 */
+const smoothCircular = (values: number[], radius: number, passes: number) => {
+  const count = values.length;
+  let current = values;
+  for (let pass = 0; pass < passes; pass++) {
+    const next = new Array<number>(count);
+    for (let i = 0; i < count; i++) {
+      let total = 0;
+      for (let k = -radius; k <= radius; k++) total += current[((i + k) % count + count) % count];
+      next[i] = total / (radius * 2 + 1);
+    }
+    current = next;
+  }
+  return current;
+};
+
 type Point = { x: number; y: number };
 
-/** 半径配列からローポリ多角形の頂点を作る（12時始まり・時計回り）。 */
+/** 半径配列から輪郭の頂点を作る（12時始まり・時計回り）。 */
 const buildPolygon = (radii: number[]): Point[] =>
   radii.map((r, i) => {
     const angle = (i / radii.length) * TAU - Math.PI / 2;
@@ -146,33 +205,19 @@ const tracePolygon = (path: Path2D | CanvasRenderingContext2D, points: Point[]) 
   path.closePath();
 };
 
-/**
- * 多角形の辺上（弦上）の点を求める。
- * 半径補間ではなく実際の辺をたどるので、線に沿わせた目盛りがズレない。
- */
-const pointOnPolygon = (points: Point[], t: number): Point => {
-  const count = points.length;
-  const position = (((t % 1) + 1) % 1) * count;
-  const index = Math.floor(position);
-  const fraction = position - index;
-  const a = points[index % count];
-  const b = points[(index + 1) % count];
-  return { x: a.x + (b.x - a.x) * fraction, y: a.y + (b.y - a.y) * fraction };
-};
-
 /** 内側リングの分割数。細かく取り、平滑化して丸い線にする。 */
 const INNER_POINTS = 512;
-/** 外側リングの角数。参照映像に合わせてはっきり多角形に見える粗さにする。 */
-const OUTER_SIDES = 16;
+/** 外側リングの輪郭をならす窓の半径（サンプル数）。大きいほど丸くなる。 */
+const OUTER_SMOOTH_RADIUS = 11;
 /** 外周の目盛り本数。参照映像の角度密度（約1.7度おき）に合わせる。 */
 const TICK_COUNT = 208;
-/** これ未満の帯域は点だけを打つ。 */
-const TICK_DOT_THRESHOLD = 0.09;
 /** ヒゲが伸びる最大量（内側半径比）。 */
 const HAIR_LIMIT = 0.22;
+/** ヒゲの強弱カーブ。大きいほど弱い音で短くなる。 */
+const HAIR_EXPONENT = 1.35;
 
 export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): RingMetrics {
-  const { width, height, glowScale, fft, wave, playing, time, sensitivity } = options;
+  const { width, height, glowScale, fft, wave, playing, time, sensitivity, state } = options;
   const shortest = Math.min(width, height);
   const innerR = shortest * RING_INNER_RATIO;
   const outerR = shortest * RING_OUTER_RATIO;
@@ -193,7 +238,23 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
       0,
     ) / harmonics.length;
   const hair = createWaveDetail(wave, playing);
-  const bass = playing && fft?.length ? fft.slice(1, 10).reduce((a, b) => a + b, 0) / (9 * 255) : 0;
+
+  // ---- 音量追従 -----------------------------------------------------------
+  // 立ち上がりは即座、戻りはゆっくり。こうすると「その曲が大きいときの値」が
+  // 基準として残り、音が弱まったフレームでは比が下がって絵も一緒に弱くなる。
+  const elapsed = state.lastTime > 0 ? Math.max(0, Math.min(500, time - state.lastTime)) : 0;
+  state.lastTime = time;
+  const release = Math.pow(0.5, elapsed / LEVEL_RELEASE_HALF_LIFE);
+  const decay = Math.pow(0.5, elapsed / LOUDNESS_HALF_LIFE);
+  state.level = Math.max(hair.rms, state.level * release);
+  state.reference = Math.max(state.level, state.reference * decay);
+  state.detailReference = Math.max(hair.peak, state.detailReference * decay);
+  const ratio = state.reference > SILENCE_RMS ? state.level / state.reference : 0;
+  const energy = Math.pow(Math.max(0, Math.min(1, ratio)), LOUDNESS_EXPONENT);
+  // ヒゲも同じ考え方で、曲の大きいときの速い成分を 1 とした比で出す
+  const hairScale = state.detailReference > 1e-4 ? 1 / state.detailReference : 0;
+
+  const bass = (playing && fft?.length ? fft.slice(1, 10).reduce((a, b) => a + b, 0) / (9 * 255) : 0) * energy;
   const hue = ((time / (RING_HUE_PERIOD / 360)) % 360 + 360) % 360;
   const neon = `hsl(${hue.toFixed(1)}, 100%, 58%)`;
   const neonSoft = `hsla(${hue.toFixed(1)}, 100%, 60%, 0.55)`;
@@ -207,7 +268,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   // ---- 内側リング（なめらかなネオンの円） ---------------------------------
   const innerRadii: number[] = [];
   for (let i = 0; i < INNER_POINTS; i++) {
-    const shape = shapeAt(i / INNER_POINTS) * 0.035 * react;
+    const shape = shapeAt(i / INNER_POINTS) * 0.035 * react * energy;
     innerRadii.push(innerR * (1 + shape + bass * 0.02 * react));
   }
   const innerPoints = buildPolygon(innerRadii);
@@ -224,9 +285,11 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   };
 
   const bloom = 1 + bass * 0.55;
-  glowPass(neonSoft, innerR * 0.05, innerR * 0.34 * bloom, 0.45);
-  glowPass(neonSoft, innerR * 0.04, innerR * 0.16 * bloom, 0.55);
-  glowPass(neon, innerR * 0.028, innerR * 0.06, 0.9);
+  // グローの強さも音量で息をさせる。ただしリング自体は常に見えるよう下限を残す。
+  const shine = 0.55 + 0.45 * energy;
+  glowPass(neonSoft, innerR * 0.05, innerR * 0.34 * bloom, 0.45 * shine);
+  glowPass(neonSoft, innerR * 0.04, innerR * 0.16 * bloom, 0.55 * shine);
+  glowPass(neon, innerR * 0.028, innerR * 0.06, 0.9 * shine);
   glowPass("#ffffff", innerR * 0.018, innerR * 0.025, 1);
 
   // 線上を走る針状のヒゲ（時間波形の速い成分）
@@ -238,8 +301,12 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   ctx.beginPath();
   for (let i = 0; i <= INNER_POINTS; i++) {
     const index = i % INNER_POINTS;
-    const sample = hair.at(index / INNER_POINTS);
-    const magnitude = Math.min(HAIR_LIMIT, Math.pow(Math.abs(sample), 1.15) * 0.15 * hair.drive * react);
+    // 曲が大きいときの速い成分を 1 とした比。弱まればそのぶん短くなる。
+    const sample = hair.at(index / INNER_POINTS) * hairScale;
+    const magnitude = Math.min(
+      HAIR_LIMIT,
+      Math.pow(Math.min(1, Math.abs(sample)), HAIR_EXPONENT) * 0.26 * react,
+    );
     const offset = Math.sign(sample) * magnitude * innerR;
     const base = innerPoints[index];
     const distance = innerRadii[index] || 1;
@@ -251,22 +318,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   ctx.closePath();
   ctx.stroke();
 
-  // ---- 外側リング（1px 白ローポリ + 目盛り） -------------------------------
-  const outerRadii: number[] = [];
-  for (let i = 0; i < OUTER_SIDES; i++) {
-    const level = detailAt(i / OUTER_SIDES);
-    outerRadii.push(outerR * (1 + (level - 0.3) * 0.075 * react));
-  }
-  const outerPoints = buildPolygon(outerRadii);
-
-  ctx.globalAlpha = 0.95;
-  ctx.strokeStyle = "#ffffff";
-  ctx.lineWidth = 1;
-  ctx.shadowBlur = 0;
-  ctx.beginPath();
-  tracePolygon(ctx, outerPoints);
-  ctx.stroke();
-
+  // ---- 外側リング（なめらかな白い円 + 目盛り） -----------------------------
   let frameMin = 1;
   let frameMax = 0;
   let sum = 0;
@@ -283,27 +335,39 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const floor = (sum / TICK_COUNT) * 0.6;
   const span = Math.max(0.15, 1 - floor);
 
-  // 目盛りの太さ・点の大きさは間隔に対する比で決める。
+  // 帯域ごとの細かい凹凸をならしてから輪郭にする。目盛りと同じ分割数で
+  // 描くので、角の立った多角形ではなく丸い線になり、目盛りもその上に乗る。
+  const outerShape = smoothCircular(levels, OUTER_SMOOTH_RADIUS, 2);
+  const outerRadii = outerShape.map(
+    (value) => outerR * (1 + (value - 0.3) * 0.07 * react * energy),
+  );
+  const outerPoints = buildPolygon(outerRadii);
+
+  ctx.globalAlpha = 0.95;
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1;
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  tracePolygon(ctx, outerPoints);
+  ctx.stroke();
+
+  // 目盛りの太さと最短の長さは間隔に対する比で決める。
   // リング径を変えても線が詰まって帯にならず、抜け感が保たれる。
+  // 最短でも線の外へわずかに出るので、音が弱くても目盛りの並びは残り、
+  // 素の多角形に戻ってしまうことがない（丸いキャップで点に見える）。
   const spacing = (TAU * outerR) / TICK_COUNT;
   ctx.lineWidth = Math.max(0.5, spacing * 0.26);
-  ctx.fillStyle = "#ffffff";
-  const dotRadius = Math.max(0.35, spacing * 0.22);
+  const baseLength = Math.max(0.7, spacing * 0.6);
   for (let i = 0; i < TICK_COUNT; i++) {
     const emphasis = Math.max(0, levels[i] - floor) / span;
-    const base = pointOnPolygon(outerPoints, i / TICK_COUNT);
-    const distance = Math.hypot(base.x, base.y) || 1;
+    // 伸びる量だけを音量に追従させる。弱い場面では長さが素直に縮む。
+    const reach = emphasis * energy;
+    const base = outerPoints[i];
+    const distance = outerRadii[i] || 1;
     const nx = base.x / distance;
     const ny = base.y / distance;
-    if (emphasis < TICK_DOT_THRESHOLD) {
-      ctx.globalAlpha = 0.85;
-      ctx.beginPath();
-      ctx.arc(base.x, base.y, dotRadius, 0, TAU);
-      ctx.fill();
-      continue;
-    }
-    const length = outerR * (0.006 + emphasis * 0.11 * react);
-    ctx.globalAlpha = 0.6 + emphasis * 0.4;
+    const length = baseLength + outerR * reach * 0.11 * react;
+    ctx.globalAlpha = 0.6 + reach * 0.4;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
     ctx.lineTo(base.x + nx * length, base.y + ny * length);

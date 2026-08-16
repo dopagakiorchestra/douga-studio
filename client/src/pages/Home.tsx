@@ -18,7 +18,7 @@ import {
   Upload,
   Waves,
 } from "lucide-react";
-import { drawRing, RING_INNER_RATIO, type RingMetrics } from "@/lib/ringVisualizer";
+import { createRingState, drawRing, RING_INNER_RATIO, type RingMetrics } from "@/lib/ringVisualizer";
 
 const styles = [
   { id: "bars", label: "Spectrum", icon: Radio, desc: "縦方向のスペクトラム" },
@@ -64,6 +64,7 @@ export default function Home() {
   const imageRef = useRef<HTMLInputElement>(null);
   const bgImageRef = useRef<HTMLImageElement | null>(null);
   const ringMetricsRef = useRef<RingMetrics>({ min: 0, max: 0 });
+  const ringStateRef = useRef(createRingState());
 
   useEffect(() => {
     const stopPlayback = () => { const audio = audioRef.current; if (audio) { audio.pause(); audio.currentTime = 0; } if (audioContextRef.current && audioContextRef.current.state !== "closed") audioContextRef.current.suspend(); setPlaying(false); };
@@ -136,6 +137,7 @@ export default function Home() {
           playing,
           time,
           sensitivity,
+          state: ringStateRef.current,
         });
       }
       ctx.shadowBlur = 0;
@@ -153,7 +155,7 @@ export default function Home() {
     setAudioName(file.name); setAudioUrl(URL.createObjectURL(file)); toast.success("音源を読み込みました");
   };
   const handleImage = (file?: File) => { if (!file) return; setImageUrl(URL.createObjectURL(file)); toast.success("アートワークを設定しました"); };
-  const togglePlay = async () => { const audio = audioRef.current; if (!audioUrl || !audio) { toast.info("まず音源をアップロードしてください"); return; } if (!audioContextRef.current) { const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext; const ctx = new AudioCtx(); const analyser = ctx.createAnalyser(); analyser.fftSize = 256; analyser.smoothingTimeConstant = .55; const destination = ctx.createMediaStreamDestination(); const source = ctx.createMediaElementSource(audio); source.connect(analyser); analyser.connect(ctx.destination); analyser.connect(destination); audioContextRef.current = ctx; analyserRef.current = analyser; sourceRef.current = source; destinationRef.current = destination; } if (audioContextRef.current.state === "suspended") await audioContextRef.current.resume(); if (playing) { audio.pause(); setPlaying(false); } else { await audio.play(); setPlaying(true); } };
+  const togglePlay = async () => { const audio = audioRef.current; if (!audioUrl || !audio) { toast.info("まず音源をアップロードしてください"); return; } if (!audioContextRef.current) { const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext; const ctx = new AudioCtx(); const analyser = ctx.createAnalyser(); analyser.fftSize = 256; analyser.smoothingTimeConstant = .5; analyser.minDecibels = -78; analyser.maxDecibels = -12; const destination = ctx.createMediaStreamDestination(); const source = ctx.createMediaElementSource(audio); source.connect(analyser); analyser.connect(ctx.destination); analyser.connect(destination); audioContextRef.current = ctx; analyserRef.current = analyser; sourceRef.current = source; destinationRef.current = destination; } if (audioContextRef.current.state === "suspended") await audioContextRef.current.resume(); if (playing) { audio.pause(); setPlaying(false); } else { await audio.play(); setPlaying(true); } };
   const reset = () => { setAudioUrl(""); setImageUrl(""); setAudioName("音源が選択されていません"); setProgress(0); setDuration(0); setPlaying(false); toast.info("キャンバスをリセットしました"); };
 
   /** 書き出し前に、リングのグローと帯域の反応がちゃんと出ているかを確かめる。 */
