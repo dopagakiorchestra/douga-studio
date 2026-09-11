@@ -394,7 +394,8 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
     const distance = outerRadii[i] || 1;
     const nx = base.x / distance;
     const ny = base.y / distance;
-    const length = baseLength + outerR * reach * 0.15 * react;
+    // 伸びる量の係数。0.15 から 1.5 倍にして、トゲをさらに長くしている。
+    const length = baseLength + outerR * reach * 0.225 * react;
     ctx.globalAlpha = 0.6 + reach * 0.4;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
