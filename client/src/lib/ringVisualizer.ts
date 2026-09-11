@@ -62,10 +62,15 @@ export type RingState = {
   /** 同じく、ヒゲ用（波形の速い成分）の基準。 */
   detailReference: number;
   /**
-   * 帯域ごとの最近の平均。帯域の並び（回転を戻した座標）で持つ。
-   * ずっと鳴っている帯域を上限に張り付かせないために使う。
+   * 帯域ごとの最近の山。帯域の並び（回転を戻した座標）で持つ。
+   * これを 1 とみなして各帯域を正規化するので、もともと弱い帯域
+   * （ハイハットしか鳴っていない高域など）も自分の山まで伸びる。
    */
+  bandPeak: Float32Array | null;
+  /** 正規化したあとの値の最近の平均。時間方向の上振れを見るために使う。 */
   bandAverage: Float32Array | null;
+  /** 目盛りの長さの保持。短いアタックを数フレーム残して見えるようにする。 */
+  tickHold: Float32Array | null;
   /** 前回描画した時刻（ミリ秒）。 */
   lastTime: number;
 };
@@ -74,7 +79,9 @@ export const createRingState = (): RingState => ({
   level: 0,
   reference: 0,
   detailReference: 0,
+  bandPeak: null,
   bandAverage: null,
+  tickHold: null,
   lastTime: 0,
 });
 
@@ -125,6 +132,26 @@ const BAND_SHAPE = 0.72;
 /** 帯域ごとの平均が半分まで下がるのにかかる時間（ミリ秒）。 */
 const BAND_AVERAGE_HALF_LIFE = 700;
 
+/** 円周へ配る FFT ビンの上端（全ビンに対する割合）。 */
+const BAND_TOP = 0.5;
+/** 帯域ごとの山が半分まで下がるのにかかる時間（ミリ秒）。 */
+const BAND_PEAK_HALF_LIFE = 3000;
+/**
+ * 帯域ごとの山の下限。ゲインの上限（1 / この値）でもある。
+ * 本当に何も鳴っていない帯域のノイズまで持ち上げないための歯止め。
+ */
+const BAND_PEAK_FLOOR = 0.12;
+/**
+ * 目盛りの長さを保持するリリースの半減期（ミリ秒）。
+ * ハイハットのようにアタックが1〜2フレームしかない帯域は、
+ * そのまま描くと点滅すら見えない。少しだけ余韻を残す。
+ */
+const TICK_HOLD_HALF_LIFE = 90;
+/** 強調の配合。空間方向の突出・時間方向の上振れ・その帯域内での高さ。 */
+const EMPHASIS_CONTRAST = 0.22;
+const EMPHASIS_NOVELTY = 0.65;
+const EMPHASIS_LEVEL = 0.1;
+
 /**
  * FFT を対数軸で円周へ割り当てるサンプラーを作る。
  *
@@ -138,7 +165,9 @@ const createSpectrum = (fft: Uint8Array | null, playing: boolean) => {
   const bins = fft?.length ?? 0;
   if (!playing || !fft || bins === 0) return () => 0;
   const lowBin = 2;
-  const highBin = Math.max(lowBin + 1, Math.floor(bins * 0.82));
+  // 上端は約 11kHz。ここより上は普通のミックスではほとんど鳴っておらず、
+  // 以前の 0.82（約 19kHz）だと円周の 1/4 が「ずっと反応しない帯」になっていた。
+  const highBin = Math.max(lowBin + 1, Math.floor(bins * BAND_TOP));
   const ratio = highBin / lowBin;
   const rawAt = (t: number) => {
     // 素の対数だと 86〜1000Hz だけで円周の 45% を占める。そこは常に鳴って
@@ -405,29 +434,53 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   ctx.lineWidth = Math.max(0.5, spacing * 0.26);
   const baseLength = Math.max(0.7, spacing * 0.6);
 
-  // 帯域ごとの平均を更新する。回転しても同じ帯域を追えるよう、
+  // 帯域ごとの状態を更新する。回転しても同じ帯域を追えるよう、
   // 回転を戻した座標（バンド座標）で持つ。
-  if (!state.bandAverage || state.bandAverage.length !== TICK_COUNT) {
-    state.bandAverage = new Float32Array(TICK_COUNT).fill(0);
+  if (!state.bandPeak || state.bandPeak.length !== TICK_COUNT) {
+    state.bandPeak = new Float32Array(TICK_COUNT);
+    state.bandAverage = new Float32Array(TICK_COUNT);
+    state.tickHold = new Float32Array(TICK_COUNT);
   }
-  const bandAverage = state.bandAverage;
+  const bandPeak = state.bandPeak;
+  const bandAverage = state.bandAverage!;
+  const tickHold = state.tickHold!;
+  const peakDecay = Math.pow(0.5, elapsed / BAND_PEAK_HALF_LIFE);
   const bandDecay = Math.pow(0.5, elapsed / BAND_AVERAGE_HALF_LIFE);
+  const holdDecay = Math.pow(0.5, elapsed / TICK_HOLD_HALF_LIFE);
   const slotOf = (i: number) =>
     Math.min(TICK_COUNT - 1, Math.floor(((((i / TICK_COUNT - bandDrift) % 1) + 1) % 1) * TICK_COUNT));
+  // 帯域ごとに「最近の山」で割って高さを揃える。
+  // 生の大きさのまま扱うと、低域だけが常に長く、高域はほとんど鳴っていない
+  // ので一生伸びない、という円周の当たり外れがそのまま絵に出てしまう。
+  // 曲全体の強弱は energy（音量追従）が別にかけるので、ここで揃えても
+  // 「静かになったら小さくなる」性質は保たれる。
+  const normalized: number[] = [];
   for (let i = 0; i < TICK_COUNT; i++) {
     const slot = slotOf(i);
-    bandAverage[slot] = bandAverage[slot] * bandDecay + levels[i] * (1 - bandDecay);
+    bandPeak[slot] = Math.max(levels[i], bandPeak[slot] * peakDecay);
+    const value = Math.min(1, levels[i] / Math.max(bandPeak[slot], BAND_PEAK_FLOOR));
+    normalized.push(value);
+    bandAverage[slot] = bandAverage[slot] * bandDecay + value * (1 - bandDecay);
   }
 
   for (let i = 0; i < TICK_COUNT; i++) {
-    // 全周のなかでどれだけ突出しているか（空間方向）
+    const slot = slotOf(i);
+    // 全周のなかでどれだけ突出しているか（空間方向）。
+    // 生の大きさで見るので、低域が太いという曲の性格はここに残る。
     const contrast = Math.max(0, levels[i] - floor) / span;
     // その帯域自身の最近の平均からどれだけ上振れしたか（時間方向）。
     // ずっと同じ強さで鳴っている帯域はここが 0 に近くなり、
     // 張り付いたまま動かない塊にならない。
-    const average = bandAverage[slotOf(i)];
-    const novelty = Math.max(0, Math.min(1, (levels[i] - average) / Math.max(average, 0.12)));
-    const emphasis = Math.max(0, Math.min(1, contrast * 0.4 + novelty * 0.8));
+    const value = normalized[i];
+    const average = bandAverage[slot];
+    const novelty = Math.max(0, Math.min(1, (value - average) / Math.max(1 - average, 0.3)));
+    const raw = Math.max(
+      0,
+      Math.min(1, contrast * EMPHASIS_CONTRAST + novelty * EMPHASIS_NOVELTY + value * EMPHASIS_LEVEL),
+    );
+    // 短いリリースで保持する。1〜2フレームしかないアタックでも形として見える。
+    tickHold[slot] = Math.max(raw, tickHold[slot] * holdDecay);
+    const emphasis = tickHold[slot];
     // 伸びる量だけを音量に追従させる。弱い場面では長さが素直に縮む。
     const reach = emphasis * energy;
     const base = outerPoints[i];
