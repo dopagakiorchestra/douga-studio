@@ -71,17 +71,42 @@ export type RingState = {
   bandAverage: Float32Array | null;
   /** 目盛りの長さの保持。短いアタックを数フレーム残して見えるようにする。 */
   tickHold: Float32Array | null;
+  /**
+   * 基準が曲全体の解析から確定しているか。
+   * true のあいだは毎フレームの基準更新を行わない。再生しながら基準を
+   * 育てると、頭では基準が 0 から始まるので全部が上限を打って針が飛び出し、
+   * 静かな部分では基準が数秒で下がってまた大きく見える（＝サビが目立たない）。
+   */
+  fixed: boolean;
   /** 前回描画した時刻（ミリ秒）。 */
   lastTime: number;
 };
 
-export const createRingState = (): RingState => ({
+/**
+ * 曲全体を一度解析して得た基準。読み込み時に作り、
+ * プレビューと書き出しの両方へ同じものを渡す。
+ */
+export type RingCalibration = {
+  /** 曲全体での音量の基準（RMS）。 */
+  reference: number;
+  /** 曲全体での速い成分の基準。 */
+  detailReference: number;
+  /** 帯域座標ごとの、曲全体での山。 */
+  bandPeak: Float32Array;
+  /** 帯域座標ごとの、正規化したあとの値の平均。 */
+  bandAverage: Float32Array;
+};
+
+export const createRingState = (calibration?: RingCalibration | null): RingState => ({
   level: 0,
-  reference: 0,
-  detailReference: 0,
-  bandPeak: null,
-  bandAverage: null,
-  tickHold: null,
+  reference: calibration?.reference ?? 0,
+  detailReference: calibration?.detailReference ?? 0,
+  // 解析結果はここで複製する。State は描画中に書き換えるので、
+  // 同じ calibration を使う別の State と配列を共有してはいけない。
+  bandPeak: calibration ? Float32Array.from(calibration.bandPeak) : null,
+  bandAverage: calibration ? Float32Array.from(calibration.bandAverage) : null,
+  tickHold: calibration ? new Float32Array(calibration.bandPeak.length) : null,
+  fixed: Boolean(calibration),
   lastTime: 0,
 });
 
@@ -140,7 +165,7 @@ const BAND_PEAK_HALF_LIFE = 3000;
  * 帯域ごとの山の下限。ゲインの上限（1 / この値）でもある。
  * 本当に何も鳴っていない帯域のノイズまで持ち上げないための歯止め。
  */
-const BAND_PEAK_FLOOR = 0.12;
+export const BAND_PEAK_FLOOR = 0.12;
 /**
  * 目盛りの長さを保持するリリースの半減期（ミリ秒）。
  * ハイハットのようにアタックが1〜2フレームしかない帯域は、
@@ -149,12 +174,23 @@ const BAND_PEAK_FLOOR = 0.12;
 const TICK_HOLD_HALF_LIFE = 70;
 /**
  * 強調の配合。空間方向の突出・時間方向の上振れ・その帯域内での高さ。
- * 突出と高さは「鳴っているあいだ一定」の成分なので、重くすると
- * その帯域だけ長さが動かない下駄になる。動きを担う上振れを主役にする。
+ *
+ * 上振れ（変化量）だけで決めると、曲の盛り上がりと絵が噛み合わない。
+ * 密度の高いサビは「鳴り続けている」ので上振れが小さく、まばらな
+ * A メロのほうが上振れは大きいからだ。基準が曲全体で確定していれば
+ * 「その帯域の曲中の山に対する今の大きさ」が素直な盛り上がりの指標に
+ * なるので、そちらを主役に戻し、上振れは粒立ちを付ける役にする。
  */
 const EMPHASIS_CONTRAST = 0.12;
-const EMPHASIS_NOVELTY = 0.95;
-const EMPHASIS_LEVEL = 0.05;
+const EMPHASIS_NOVELTY = 0.55;
+const EMPHASIS_LEVEL = 0.4;
+/**
+ * 上振れを 1 と見なす幅。
+ * 以前は 1 - average（残りの伸びしろ）で割っていたが、それだと
+ * 鳴りっぱなしで average が高い帯域ほど分母が縮んで上振れが水増しされ、
+ * サビほど針が長くなりにくいという反転の原因になっていた。
+ */
+const NOVELTY_SPAN = 0.3;
 
 /**
  * FFT を対数軸で円周へ割り当てるサンプラーを作る。
@@ -291,6 +327,29 @@ const HAIR_LIMIT = 0.5;
 /** ヒゲの強弱カーブ。大きいほど弱い音で短くなる。 */
 const HAIR_EXPONENT = 1.25;
 
+/** 帯域座標の分割数。目盛りの本数と同じ。 */
+export const BAND_COUNT = TICK_COUNT;
+
+/**
+ * FFT を帯域座標（回転を戻した並び）へ落とす。
+ *
+ * 描画では `levels[i] = spectrum(i / TICK_COUNT - bandDrift)` を使うが、
+ * これは帯域座標 slot の値 `spectrum(slot / TICK_COUNT)` と同じもの。
+ * 曲の事前解析が描画とまったく同じ数値を見るように、ここを共通の入口にする。
+ */
+export function sampleBands(fft: Uint8Array, out?: Float32Array): Float32Array {
+  const target = out && out.length === BAND_COUNT ? out : new Float32Array(BAND_COUNT);
+  const spectrum = createSpectrum(fft, true);
+  for (let i = 0; i < BAND_COUNT; i++) target[i] = spectrum(i / BAND_COUNT);
+  return target;
+}
+
+/** 時間波形から、音量（RMS）と速い成分のピークを測る。描画と同じハイパス。 */
+export function measureWave(wave: Uint8Array): { rms: number; peak: number } {
+  const detail = createWaveDetail(wave, true);
+  return { rms: detail.rms, peak: detail.peak };
+}
+
 export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): RingMetrics {
   const { width, height, glowScale, fft, wave, playing, time, sensitivity, state } = options;
   const { innerColor, outerColor } = options;
@@ -325,8 +384,11 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const release = Math.pow(0.5, elapsed / LEVEL_RELEASE_HALF_LIFE);
   const decay = Math.pow(0.5, elapsed / LOUDNESS_HALF_LIFE);
   state.level = Math.max(hair.rms, state.level * release);
-  state.reference = Math.max(state.level, state.reference * decay);
-  state.detailReference = Math.max(hair.peak, state.detailReference * decay);
+  if (!state.fixed) {
+    // 解析していないときだけ、再生しながら基準を育てる（保険の経路）。
+    state.reference = Math.max(state.level, state.reference * decay);
+    state.detailReference = Math.max(hair.peak, state.detailReference * decay);
+  }
   const ratio = state.reference > SILENCE_RMS ? state.level / state.reference : 0;
   const energy = Math.pow(Math.max(0, Math.min(1, ratio)), LOUDNESS_EXPONENT);
   // ヒゲも同じ考え方で、曲の大きいときの速い成分を 1 とした比で出す
@@ -461,7 +523,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const normalized: number[] = [];
   for (let i = 0; i < TICK_COUNT; i++) {
     const slot = slotOf(i);
-    bandPeak[slot] = Math.max(levels[i], bandPeak[slot] * peakDecay);
+    if (!state.fixed) bandPeak[slot] = Math.max(levels[i], bandPeak[slot] * peakDecay);
     const value = Math.min(1, levels[i] / Math.max(bandPeak[slot], BAND_PEAK_FLOOR));
     normalized.push(value);
     bandAverage[slot] = bandAverage[slot] * bandDecay + value * (1 - bandDecay);
@@ -477,7 +539,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
     // 張り付いたまま動かない塊にならない。
     const value = normalized[i];
     const average = bandAverage[slot];
-    const novelty = Math.max(0, Math.min(1, (value - average) / Math.max(1 - average, 0.3)));
+    const novelty = Math.max(0, Math.min(1, (value - average) / NOVELTY_SPAN));
     const mixed = Math.max(
       0,
       Math.min(1, contrast * EMPHASIS_CONTRAST + novelty * EMPHASIS_NOVELTY + value * EMPHASIS_LEVEL),

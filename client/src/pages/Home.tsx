@@ -19,7 +19,8 @@ import {
   Upload,
   Waves,
 } from "lucide-react";
-import { createRingState, RING_INNER_RATIO, type RingMetrics } from "@/lib/ringVisualizer";
+import { createRingState, RING_INNER_RATIO, type RingCalibration, type RingMetrics } from "@/lib/ringVisualizer";
+import { analyseTrack } from "@/lib/trackAnalysis";
 import { drawFrame, RAINBOW } from "@/lib/drawFrame";
 import { canExportOffline, exportOffline, measureEncodeSpeed } from "@/lib/offlineExport";
 
@@ -110,6 +111,9 @@ export default function Home() {
   const exportUrlRef = useRef<string>("");
   const exportFileRef = useRef<File | null>(null);
   const audioFileRef = useRef<File | null>(null);
+  // 曲全体を一度解析して得た基準。プレビューと書き出しで同じものを使う。
+  const calibrationRef = useRef<RingCalibration | null>(null);
+  const [analysing, setAnalysing] = useState(false);
 
   useEffect(() => {
     const stopPlayback = () => { const audio = audioRef.current; if (audio) { audio.pause(); audio.currentTime = 0; } if (audioContextRef.current && audioContextRef.current.state !== "closed") audioContextRef.current.suspend(); setPlaying(false); };
@@ -187,14 +191,32 @@ export default function Home() {
     return () => { if (frame !== undefined) window.clearTimeout(frame); };
   }, [playing, imageUrl, title, artist, aspect, vizColor, outerColor, vizStyle, sensitivity, amplitude, wobble, lineWeight]);
 
-  const handleAudio = (file?: File) => {
+  const handleAudio = async (file?: File) => {
     if (!file) return;
     if (!file.type.includes("audio")) { toast.error("MP3またはWAVファイルを選択してください"); return; }
-    audioFileRef.current = file; setAudioName(file.name); setAudioUrl(URL.createObjectURL(file)); toast.success("音源を読み込みました");
+    audioFileRef.current = file; setAudioName(file.name); setAudioUrl(URL.createObjectURL(file));
+    // 曲全体を先に測って基準を確定させる。これをやらずに再生しながら
+    // 基準を育てると、頭で針が飛び出し、サビが逆に落ち着いて見える。
+    calibrationRef.current = null;
+    ringStateRef.current = createRingState();
+    setAnalysing(true);
+    try {
+      const calibration = await analyseTrack(await file.arrayBuffer());
+      // 解析中に別の音源へ差し替えられていたら捨てる。
+      if (audioFileRef.current !== file) return;
+      calibrationRef.current = calibration;
+      ringStateRef.current = createRingState(calibration);
+      toast.success("音源を読み込みました");
+    } catch {
+      // 解析できなくても描けないわけではない。再生しながら基準を育てる経路へ。
+      toast.success("音源を読み込みました（強弱は再生しながら合わせます）");
+    } finally {
+      if (audioFileRef.current === file) setAnalysing(false);
+    }
   };
   const handleImage = (file?: File) => { if (!file) return; setImageUrl(URL.createObjectURL(file)); toast.success("アートワークを設定しました"); };
   const togglePlay = async () => { const audio = audioRef.current; if (!audioUrl || !audio) { toast.info("まず音源をアップロードしてください"); return; } if (!audioContextRef.current) { const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext; const ctx = new AudioCtx(); const analyser = ctx.createAnalyser(); analyser.fftSize = 256; analyser.smoothingTimeConstant = .5; analyser.minDecibels = -78; analyser.maxDecibels = -12; const destination = ctx.createMediaStreamDestination(); const source = ctx.createMediaElementSource(audio); source.connect(analyser); analyser.connect(ctx.destination); analyser.connect(destination); audioContextRef.current = ctx; analyserRef.current = analyser; sourceRef.current = source; destinationRef.current = destination; } if (audioContextRef.current.state === "suspended") await audioContextRef.current.resume(); if (playing) { audio.pause(); setPlaying(false); } else { if (audio.currentTime < trimStart || audio.currentTime >= clipEnd) audio.currentTime = trimStart; await audio.play(); setPlaying(true); } };
-  const reset = () => { audioFileRef.current = null; setAudioUrl(""); setImageUrl(""); setAudioName("音源が選択されていません"); setProgress(0); setDuration(0); setTrimStart(0); setTrimEnd(0); setPlaying(false); toast.info("キャンバスをリセットしました"); };
+  const reset = () => { audioFileRef.current = null; calibrationRef.current = null; ringStateRef.current = createRingState(); setAnalysing(false); setAudioUrl(""); setImageUrl(""); setAudioName("音源が選択されていません"); setProgress(0); setDuration(0); setTrimStart(0); setTrimEnd(0); setPlaying(false); toast.info("キャンバスをリセットしました"); };
 
   /** 書き出し前に、リングのグローと帯域の反応がちゃんと出ているかを確かめる。 */
   const validateRingFrame = () => {
@@ -266,7 +288,7 @@ export default function Home() {
     const scale = width / logicalWidth;
     // この端末で本当に速いか実測する。ハードウェアエンコーダが無いと、
     // グローの多いこの映像は実時間録画より遅くなることがある。
-    const ringState = createRingState();
+    const ringState = createRingState(calibrationRef.current);
     const probeFft = new Uint8Array(128).map((_, i) => Math.max(0, 230 - i * 1.4));
     const probeWave = new Uint8Array(256).map((_, i) => 128 + Math.round(Math.sin(i / 2.5) * 70));
     const msPerFrame = await measureEncodeSpeed(format, width, height, (probeCtx, index) => {
@@ -285,6 +307,7 @@ export default function Home() {
         audioData: await file.arrayBuffer(),
         startSeconds: trimStart,
         durationSeconds: seconds,
+        calibration: calibrationRef.current,
         width,
         height,
         // プレビューと同じ論理幅で描くと見た目が一致する
@@ -363,7 +386,7 @@ export default function Home() {
     <main className="workspace">
       <aside className="left-rail">
         <div className="rail-kicker">01 / SOURCE</div>
-        <section className="panel-section"><div className="section-label"><FileAudio size={14} /> 音源</div><button className="upload-zone" onClick={() => fileRef.current?.click()}><Upload size={19} /><strong>{audioUrl ? "音源を変更" : "MP3 / WAV を追加"}</strong><span>{audioName}</span></button><input ref={fileRef} hidden type="file" accept="audio/mpeg,audio/wav,audio/x-wav" onChange={(e) => handleAudio(e.target.files?.[0])} />{audioUrl && <div className="file-state"><Check size={13} /> 読み込み済み <span>44.1 kHz</span></div>}</section>
+        <section className="panel-section"><div className="section-label"><FileAudio size={14} /> 音源</div><button className="upload-zone" onClick={() => fileRef.current?.click()}><Upload size={19} /><strong>{audioUrl ? "音源を変更" : "MP3 / WAV を追加"}</strong><span>{audioName}</span></button><input ref={fileRef} hidden type="file" accept="audio/mpeg,audio/wav,audio/x-wav" onChange={(e) => handleAudio(e.target.files?.[0])} />{audioUrl && <div className="file-state">{analysing ? <><span className="spinner" /> 解析中…</> : <><Check size={13} /> 読み込み済み</>} <span>44.1 kHz</span></div>}</section>
         <section className="panel-section"><div className="section-label"><ImagePlus size={14} /> アートワーク <em>任意</em></div><button className="image-zone" onClick={() => imageRef.current?.click()}>{imageUrl ? <img src={imageUrl} alt="アップロードしたアートワーク" /> : <><ImagePlus size={18} /><span>画像を追加</span><small>JPG / PNG</small></>}</button><input ref={imageRef} hidden type="file" accept="image/*" onChange={(e) => handleImage(e.target.files?.[0])} /><button className="text-link" onClick={() => setImageUrl("")}>デフォルト背景を使用</button></section>
         <section className="panel-section"><div className="section-label"><Library size={14} /> 情報</div><label>曲名<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="曲名を入力" /></label><label>アーティスト名<input value={artist} onChange={(e) => setArtist(e.target.value)} placeholder="アーティスト名を入力" /></label><label>ジャンル<input value={genre} onChange={(e) => setGenre(e.target.value)} placeholder="Instrumental" /></label></section>
       </aside>

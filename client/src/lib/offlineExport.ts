@@ -16,14 +16,11 @@ import {
   Output,
   WebMOutputFormat,
 } from "mediabunny";
-import { createRingState } from "./ringVisualizer";
+import { createRingState, type RingCalibration } from "./ringVisualizer";
 import { drawFrame, type FrameOptions } from "./drawFrame";
-
-/** Home.tsx の AnalyserNode と同じ設定。ここがずれると見た目が変わる。 */
-const FFT_SIZE = 256;
-const MIN_DECIBELS = -78;
-const MAX_DECIBELS = -12;
-const SMOOTHING = 0.5;
+// AnalyserNode の再現は解析側と共通。実装を二重に持つと、
+// プレビューと書き出しで見た目がずれる原因になる。
+import { FFT_SIZE, createAnalyserEmulation } from "./trackAnalysis";
 
 /** 1080p でこの内容なら十分な量。上げてもエンコードが遅くなるだけ。 */
 const VIDEO_BITRATE = 6_000_000;
@@ -41,83 +38,12 @@ export type OfflineExportOptions = {
   fps: number;
   format: "mp4" | "webm";
   frame: Omit<FrameOptions, "width" | "height" | "scale" | "fft" | "wave" | "playing" | "time" | "ringState">;
+  /** 読み込み時に作った基準。プレビューと同じものを渡すと絵が一致する。 */
+  calibration?: RingCalibration | null;
   onProgress?: (ratio: number) => void;
   signal?: AbortSignal;
 };
 
-/** 2の冪サイズの実数入力 FFT（in-place、ビット反転並べ替え）。 */
-function fft(re: Float32Array, im: Float32Array) {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) {
-      [re[i], re[j]] = [re[j], re[i]];
-      [im[i], im[j]] = [im[j], im[i]];
-    }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const angle = (-2 * Math.PI) / len;
-    const wRe = Math.cos(angle);
-    const wIm = Math.sin(angle);
-    for (let i = 0; i < n; i += len) {
-      let curRe = 1;
-      let curIm = 0;
-      for (let k = 0; k < len / 2; k++) {
-        const aRe = re[i + k];
-        const aIm = im[i + k];
-        const bRe = re[i + k + len / 2] * curRe - im[i + k + len / 2] * curIm;
-        const bIm = re[i + k + len / 2] * curIm + im[i + k + len / 2] * curRe;
-        re[i + k] = aRe + bRe;
-        im[i + k] = aIm + bIm;
-        re[i + k + len / 2] = aRe - bRe;
-        im[i + k + len / 2] = aIm - bIm;
-        const nextRe = curRe * wRe - curIm * wIm;
-        curIm = curRe * wIm + curIm * wRe;
-        curRe = nextRe;
-      }
-    }
-  }
-}
-
-/**
- * AnalyserNode の getByteFrequencyData / getByteTimeDomainData を再現する。
- * Blackman 窓 → FFT → 時間方向の平滑化 → dB → 0〜255、という仕様どおりの順序。
- */
-function createAnalyserEmulation(mono: Float32Array) {
-  const bins = FFT_SIZE / 2;
-  const window = new Float32Array(FFT_SIZE);
-  for (let i = 0; i < FFT_SIZE; i++) {
-    window[i] = 0.42 - 0.5 * Math.cos((2 * Math.PI * i) / FFT_SIZE) + 0.08 * Math.cos((4 * Math.PI * i) / FFT_SIZE);
-  }
-  const smoothed = new Float32Array(bins);
-  const re = new Float32Array(FFT_SIZE);
-  const im = new Float32Array(FFT_SIZE);
-  const frequency = new Uint8Array(bins);
-  const timeDomain = new Uint8Array(FFT_SIZE);
-  const range = MAX_DECIBELS - MIN_DECIBELS;
-
-  return (endSample: number) => {
-    const start = endSample - FFT_SIZE;
-    for (let i = 0; i < FFT_SIZE; i++) {
-      const index = start + i;
-      const sample = index >= 0 && index < mono.length ? mono[index] : 0;
-      timeDomain[i] = Math.max(0, Math.min(255, Math.round(sample * 128 + 128)));
-      re[i] = sample * window[i];
-      im[i] = 0;
-    }
-    fft(re, im);
-    for (let k = 0; k < bins; k++) {
-      const magnitude = Math.hypot(re[k], im[k]) / FFT_SIZE;
-      smoothed[k] = SMOOTHING * smoothed[k] + (1 - SMOOTHING) * magnitude;
-      const db = smoothed[k] > 0 ? 20 * Math.log10(smoothed[k]) : -Infinity;
-      const scaled = Math.round((255 * (db - MIN_DECIBELS)) / range);
-      frequency[k] = Math.max(0, Math.min(255, Number.isFinite(scaled) ? scaled : 0));
-    }
-    return { frequency, timeDomain };
-  };
-}
 
 const videoCodecFor = (format: "mp4" | "webm") => (format === "mp4" ? "avc1.640028" : "vp8");
 
@@ -253,7 +179,7 @@ export async function exportOffline(options: OfflineExportOptions): Promise<Blob
   const logicalWidth = options.logicalWidth;
   const scale = width / logicalWidth;
   const logicalHeight = height / scale;
-  const ringState = createRingState();
+  const ringState = createRingState(options.calibration);
   const totalFrames = Math.max(1, Math.round(options.durationSeconds * fps));
   // プレビューと同じ色相・回転になるよう、開始位置ぶんの時間を渡す
   const timeOffset = options.startSeconds * 1000;
