@@ -144,13 +144,17 @@ const BAND_PEAK_FLOOR = 0.12;
 /**
  * 目盛りの長さを保持するリリースの半減期（ミリ秒）。
  * ハイハットのようにアタックが1〜2フレームしかない帯域は、
- * そのまま描くと点滅すら見えない。少しだけ余韻を残す。
+ * そのまま描くと点滅すら見えない。伸びは即座、戻りはこの速さ。
  */
-const TICK_HOLD_HALF_LIFE = 90;
-/** 強調の配合。空間方向の突出・時間方向の上振れ・その帯域内での高さ。 */
-const EMPHASIS_CONTRAST = 0.22;
-const EMPHASIS_NOVELTY = 0.65;
-const EMPHASIS_LEVEL = 0.1;
+const TICK_HOLD_HALF_LIFE = 70;
+/**
+ * 強調の配合。空間方向の突出・時間方向の上振れ・その帯域内での高さ。
+ * 突出と高さは「鳴っているあいだ一定」の成分なので、重くすると
+ * その帯域だけ長さが動かない下駄になる。動きを担う上振れを主役にする。
+ */
+const EMPHASIS_CONTRAST = 0.12;
+const EMPHASIS_NOVELTY = 0.95;
+const EMPHASIS_LEVEL = 0.05;
 
 /**
  * FFT を対数軸で円周へ割り当てるサンプラーを作る。
@@ -474,10 +478,13 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
     const value = normalized[i];
     const average = bandAverage[slot];
     const novelty = Math.max(0, Math.min(1, (value - average) / Math.max(1 - average, 0.3)));
-    const raw = Math.max(
+    const mixed = Math.max(
       0,
       Math.min(1, contrast * EMPHASIS_CONTRAST + novelty * EMPHASIS_NOVELTY + value * EMPHASIS_LEVEL),
     );
+    // S字カーブで中間を広げる。弱いところはより短く、強いところはより長く、
+    // 「ぐっと伸びて、すぐ縮む」差のはっきりした動きになる。
+    const raw = smoothstep(mixed);
     // 短いリリースで保持する。1〜2フレームしかないアタックでも形として見える。
     tickHold[slot] = Math.max(raw, tickHold[slot] * holdDecay);
     const emphasis = tickHold[slot];
@@ -487,8 +494,8 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
     const distance = outerRadii[i] || 1;
     const nx = base.x / distance;
     const ny = base.y / distance;
-    // 伸びる量の係数。当初 0.15 から 2 度にわたり 1.5 倍ずつ上げている。
-    const length = baseLength + outerR * reach * 0.3375 * react;
+    // 伸びる量の係数。当初 0.15 から 1.5 倍・1.5 倍・2 倍と上げている。
+    const length = baseLength + outerR * reach * 0.675 * react;
     ctx.globalAlpha = 0.6 + reach * 0.4;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
