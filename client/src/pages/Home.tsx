@@ -74,8 +74,8 @@ export default function Home() {
   const [artist, setArtist] = useState("");
   const [genre, setGenre] = useState("Instrumental");
   const [vizColor, setVizColor] = useState(RAINBOW);
-  const [outerColor, setOuterColor] = useState("#FFFFFF");
-  const [vizStyle, setVizStyle] = useState<"line" | "ring">("line");
+  const [outerColor, setOuterColor] = useState(RAINBOW);
+  const [vizStyle, setVizStyle] = useState<"line" | "ring">("ring");
   const [sensitivity, setSensitivity] = useState<number>(PARAMETERS.sensitivity.max);
   const [amplitude, setAmplitude] = useState<number>(PARAMETERS.amplitude.max);
   const [wobble, setWobble] = useState<number>(PARAMETERS.wobble.max);
