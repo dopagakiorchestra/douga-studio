@@ -234,10 +234,13 @@ const INNER_POINTS = 512;
 const OUTER_SMOOTH_RADIUS = 11;
 /** 外周の目盛り本数。参照映像の角度密度（約1.7度おき）に合わせる。 */
 const TICK_COUNT = 208;
-/** ヒゲが伸びる最大量（内側半径比）。 */
-const HAIR_LIMIT = 0.22;
+/**
+ * ヒゲが伸びる最大量（内側半径比）。
+ * 小さいとすぐ上限に張り付き、強弱があっても同じ長さに見えてしまう。
+ */
+const HAIR_LIMIT = 0.5;
 /** ヒゲの強弱カーブ。大きいほど弱い音で短くなる。 */
-const HAIR_EXPONENT = 1.35;
+const HAIR_EXPONENT = 1.25;
 
 export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): RingMetrics {
   const { width, height, glowScale, fft, wave, playing, time, sensitivity, state } = options;
@@ -292,7 +295,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   // ---- 内側リング（なめらかなネオンの円） ---------------------------------
   const innerRadii: number[] = [];
   for (let i = 0; i < INNER_POINTS; i++) {
-    const shape = shapeAt(i / INNER_POINTS) * 0.035 * react * energy;
+    const shape = shapeAt(i / INNER_POINTS) * 0.06 * react * energy;
     innerRadii.push(innerR * (1 + shape + bass * 0.02 * react));
   }
   const innerPoints = buildPolygon(innerRadii);
@@ -330,7 +333,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
     const sample = hair.at(index / INNER_POINTS) * hairScale;
     const magnitude = Math.min(
       HAIR_LIMIT,
-      Math.pow(Math.min(1, Math.abs(sample)), HAIR_EXPONENT) * 0.26 * react,
+      Math.pow(Math.min(1, Math.abs(sample)), HAIR_EXPONENT) * 0.3 * react,
     );
     const offset = Math.sign(sample) * magnitude * innerR;
     const base = innerPoints[index];
@@ -364,7 +367,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   // 描くので、角の立った多角形ではなく丸い線になり、目盛りもその上に乗る。
   const outerShape = smoothCircular(levels, OUTER_SMOOTH_RADIUS, 2);
   const outerRadii = outerShape.map(
-    (value) => outerR * (1 + (value - 0.3) * 0.07 * react * energy),
+    (value) => outerR * (1 + (value - 0.3) * 0.1 * react * energy),
   );
   const outerPoints = buildPolygon(outerRadii);
 
@@ -391,7 +394,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
     const distance = outerRadii[i] || 1;
     const nx = base.x / distance;
     const ny = base.y / distance;
-    const length = baseLength + outerR * reach * 0.11 * react;
+    const length = baseLength + outerR * reach * 0.15 * react;
     ctx.globalAlpha = 0.6 + reach * 0.4;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);

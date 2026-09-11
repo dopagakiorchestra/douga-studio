@@ -55,11 +55,10 @@ export function drawFrame(
   const treble = fft ? fft.slice(40, 90).reduce((a, b) => a + b, 0) / (50 * 255) : 0.2;
 
   if (options.background) {
-    context.globalAlpha = 0.72;
+    // アートワークはそのままの明るさで敷く。
+    // 以前は 72% の不透明度で描いたうえに黒をかぶせていたため、
+    // 元画像の 6 割弱の明るさまで沈んでいた。
     context.drawImage(options.background, 0, 0, w, h);
-    context.fillStyle = "rgba(0,0,0,.28)";
-    context.fillRect(0, 0, w, h);
-    context.globalAlpha = 1;
   }
 
   // レインボーを選んでいるときだけ、時間で一周する色相を使う
