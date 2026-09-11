@@ -42,7 +42,7 @@ export const withAlpha = (color: string, alpha: number) => {
  * 固定だとキックのアタックが毎回同じ位置で跳ねてしまうので、
  * 帯域と角度の対応をゆっくり回して、反応する場所を移動させる。
  */
-export const RING_BAND_DRIFT_PERIOD = 18000;
+export const RING_BAND_DRIFT_PERIOD = 12000;
 
 export type RingMetrics = { min: number; max: number };
 
@@ -61,6 +61,11 @@ export type RingState = {
   reference: number;
   /** 同じく、ヒゲ用（波形の速い成分）の基準。 */
   detailReference: number;
+  /**
+   * 帯域ごとの最近の平均。帯域の並び（回転を戻した座標）で持つ。
+   * ずっと鳴っている帯域を上限に張り付かせないために使う。
+   */
+  bandAverage: Float32Array | null;
   /** 前回描画した時刻（ミリ秒）。 */
   lastTime: number;
 };
@@ -69,6 +74,7 @@ export const createRingState = (): RingState => ({
   level: 0,
   reference: 0,
   detailReference: 0,
+  bandAverage: null,
   lastTime: 0,
 });
 
@@ -113,6 +119,12 @@ const smoothstep = (t: number) => t * t * (3 - 2 * t);
 /** 継ぎ目のクロスフェードに使う円周の割合。 */
 const SEAM_ARC = 0.12;
 
+/** 帯域を円周へ当てる曲線。1 未満ほど低域の取り分が減る。 */
+const BAND_SHAPE = 0.72;
+
+/** 帯域ごとの平均が半分まで下がるのにかかる時間（ミリ秒）。 */
+const BAND_AVERAGE_HALF_LIFE = 700;
+
 /**
  * FFT を対数軸で円周へ割り当てるサンプラーを作る。
  *
@@ -129,7 +141,11 @@ const createSpectrum = (fft: Uint8Array | null, playing: boolean) => {
   const highBin = Math.max(lowBin + 1, Math.floor(bins * 0.82));
   const ratio = highBin / lowBin;
   const rawAt = (t: number) => {
-    const position = Math.max(1, lowBin * Math.pow(ratio, t));
+    // 素の対数だと 86〜1000Hz だけで円周の 45% を占める。そこは常に鳴って
+    // いて隣り合うビンの相関も高いため、広い範囲が同じ動きの塊になる。
+    // 指数を寝かせて低域の取り分を減らし、中高域へ配り直す。
+    const shaped = Math.sign(t) * Math.pow(Math.abs(t), BAND_SHAPE);
+    const position = Math.max(1, lowBin * Math.pow(ratio, shaped));
     const index = Math.floor(position);
     const fraction = position - index;
     const a = fft[Math.min(index, bins - 1)] / 255;
@@ -148,14 +164,14 @@ const createSpectrum = (fft: Uint8Array | null, playing: boolean) => {
 /**
  * 内側リングの形を作る低次ハーモニクスの重み。
  * 角度の周期関数の和なので、どんな音でも継ぎ目なく閉じた丸い線になる。
- * spin は 1 秒あたりの回転数。それぞれ速さと向きを変えてあるので、
- * 全体が硬く回らず、うねりが常に組み変わりながら動く。
+ * 形全体は外側リングと同じ速さで一周する。spin はそこへ重ねる 1 秒あたりの
+ * 微かな自転で、向きと速さを変えてあるためうねりが少しずつ組み変わる。
  */
 const SHAPE_HARMONICS = [
-  { order: 2, band: 0.04, phase: 0, spin: 0.055 },
-  { order: 3, band: 0.13, phase: 1.1, spin: -0.038 },
-  { order: 5, band: 0.28, phase: 2.4, spin: 0.026 },
-  { order: 7, band: 0.5, phase: 3.9, spin: -0.017 },
+  { order: 2, band: 0.04, phase: 0, spin: 0.014 },
+  { order: 3, band: 0.13, phase: 1.1, spin: -0.01 },
+  { order: 5, band: 0.28, phase: 2.4, spin: 0.007 },
+  { order: 7, band: 0.5, phase: 3.9, spin: -0.004 },
 ];
 
 /**
@@ -261,7 +277,9 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const harmonics = SHAPE_HARMONICS.map((h) => ({ ...h, gain: spectrum(h.band) }));
   const shapeAt = (t: number) =>
     harmonics.reduce(
-      (sum, h) => sum + h.gain * Math.cos(TAU * (h.order * t + h.spin * seconds) + h.phase),
+      // t から bandDrift を引くと、形全体が外側と同じ速さで一周する。
+      // spin はその上に乗る微かな組み変わりとして残す。
+      (sum, h) => sum + h.gain * Math.cos(TAU * (h.order * (t - bandDrift) + h.spin * seconds) + h.phase),
       0,
     ) / harmonics.length;
   const hair = createWaveDetail(wave, playing);
@@ -330,7 +348,7 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   for (let i = 0; i <= INNER_POINTS; i++) {
     const index = i % INNER_POINTS;
     // 曲が大きいときの速い成分を 1 とした比。弱まればそのぶん短くなる。
-    const sample = hair.at(index / INNER_POINTS) * hairScale;
+    const sample = hair.at(index / INNER_POINTS - bandDrift) * hairScale;
     const magnitude = Math.min(
       HAIR_LIMIT,
       Math.pow(Math.min(1, Math.abs(sample)), HAIR_EXPONENT) * 0.3 * react,
@@ -386,16 +404,38 @@ export function drawRing(ctx: CanvasRenderingContext2D, options: RingOptions): R
   const spacing = (TAU * outerR) / TICK_COUNT;
   ctx.lineWidth = Math.max(0.5, spacing * 0.26);
   const baseLength = Math.max(0.7, spacing * 0.6);
+
+  // 帯域ごとの平均を更新する。回転しても同じ帯域を追えるよう、
+  // 回転を戻した座標（バンド座標）で持つ。
+  if (!state.bandAverage || state.bandAverage.length !== TICK_COUNT) {
+    state.bandAverage = new Float32Array(TICK_COUNT).fill(0);
+  }
+  const bandAverage = state.bandAverage;
+  const bandDecay = Math.pow(0.5, elapsed / BAND_AVERAGE_HALF_LIFE);
+  const slotOf = (i: number) =>
+    Math.min(TICK_COUNT - 1, Math.floor(((((i / TICK_COUNT - bandDrift) % 1) + 1) % 1) * TICK_COUNT));
   for (let i = 0; i < TICK_COUNT; i++) {
-    const emphasis = Math.max(0, levels[i] - floor) / span;
+    const slot = slotOf(i);
+    bandAverage[slot] = bandAverage[slot] * bandDecay + levels[i] * (1 - bandDecay);
+  }
+
+  for (let i = 0; i < TICK_COUNT; i++) {
+    // 全周のなかでどれだけ突出しているか（空間方向）
+    const contrast = Math.max(0, levels[i] - floor) / span;
+    // その帯域自身の最近の平均からどれだけ上振れしたか（時間方向）。
+    // ずっと同じ強さで鳴っている帯域はここが 0 に近くなり、
+    // 張り付いたまま動かない塊にならない。
+    const average = bandAverage[slotOf(i)];
+    const novelty = Math.max(0, Math.min(1, (levels[i] - average) / Math.max(average, 0.12)));
+    const emphasis = Math.max(0, Math.min(1, contrast * 0.4 + novelty * 0.8));
     // 伸びる量だけを音量に追従させる。弱い場面では長さが素直に縮む。
     const reach = emphasis * energy;
     const base = outerPoints[i];
     const distance = outerRadii[i] || 1;
     const nx = base.x / distance;
     const ny = base.y / distance;
-    // 伸びる量の係数。0.15 から 1.5 倍にして、トゲをさらに長くしている。
-    const length = baseLength + outerR * reach * 0.225 * react;
+    // 伸びる量の係数。当初 0.15 から 2 度にわたり 1.5 倍ずつ上げている。
+    const length = baseLength + outerR * reach * 0.3375 * react;
     ctx.globalAlpha = 0.6 + reach * 0.4;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
