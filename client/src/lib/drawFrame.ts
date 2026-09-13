@@ -117,16 +117,20 @@ export function drawFrame(
   if (cleanTitle || cleanArtist) {
     context.textAlign = "center";
     context.textBaseline = "middle";
-    if (cleanTitle) {
-      context.fillStyle = "rgba(255,255,255,.92)";
-      context.font = "600 16px 'Space Grotesk', sans-serif";
-      context.fillText(cleanTitle, w / 2, h - (cleanArtist ? 46 : 28));
-    }
-    if (cleanArtist) {
-      context.fillStyle = "rgba(255,255,255,.58)";
-      context.font = "12px 'IBM Plex Mono', monospace";
-      context.fillText(cleanArtist, w / 2, h - 22);
-    }
+    // 黒い縁取りを敷いてから白で塗る。アートワークは明るい砂浜のことも
+    // 空のこともあるので、白を薄く置くだけだと背景に溶けて読めなくなる。
+    // 縁取りは文字の外へ半分しか出ないため、太さは字の大きさの 2 割強を取る。
+    const label = (text: string, size: number, font: string, y: number) => {
+      context.font = font;
+      context.lineJoin = "round";
+      context.lineWidth = size * 0.22;
+      context.strokeStyle = "rgba(0,0,0,.85)";
+      context.strokeText(text, w / 2, y);
+      context.fillStyle = "#ffffff";
+      context.fillText(text, w / 2, y);
+    };
+    if (cleanTitle) label(cleanTitle, 16, "600 16px 'Space Grotesk', sans-serif", h - (cleanArtist ? 46 : 28));
+    if (cleanArtist) label(cleanArtist, 13, "13px 'IBM Plex Mono', monospace", h - 22);
     context.textAlign = "start";
   }
   return metrics;
