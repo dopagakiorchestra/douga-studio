@@ -157,11 +157,13 @@ export function drawFrame(
     // リングの針は外径の 1.6 倍ほどまで伸びる。その外側に置かないと
     // 盛り上がりで文字に針が刺さる。
     const ringClear = h / 2 - shortest * RING_OUTER_RATIO * 2.7;
+    // 上寄せは下寄せと同じだけ端から離す。上下で余白が揃う。
+    const edge = cleanTitle && cleanArtist ? 22 : 28;
     const top =
       options.labelPosition === "bottom"
         ? h - (cleanTitle && cleanArtist ? 46 : 28)
         : options.labelPosition === "top"
-          ? h * SHORTS_COVER_TOP
+          ? edge
           : Math.max(h * SHORTS_COVER_TOP, ringClear - (cleanTitle && cleanArtist ? 22 : 0));
     // 下寄せのときだけ従来どおり曲名が上、それ以外は上から曲名→アーティスト名。
     if (cleanTitle) label(cleanTitle, 16, "600 16px 'Space Grotesk', sans-serif", top);
