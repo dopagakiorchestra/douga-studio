@@ -4,12 +4,21 @@
  * プレビューのループと、書き出し（オフライン描画）の両方から呼ぶ。
  * 見た目を1か所に集約しておかないと、プレビューと書き出しがずれる。
  */
-import { drawRing, hueAt, neonColor, type RingMetrics, type RingState } from "./ringVisualizer";
+import { drawRing, hueAt, neonColor, RING_OUTER_RATIO, type RingMetrics, type RingState } from "./ringVisualizer";
 
 /** パレットで「時間で色相が一周する」を表す値。 */
 export const RAINBOW = "rainbow";
 
 export type VizStyle = "line" | "ring";
+
+/**
+ * 曲名とアーティスト名を置く位置。
+ *
+ * ショート動画は下 3 割ほどと右端がプラットフォームの UI（共有ボタン、
+ * チャンネル名、説明、下のタブバー）で覆われる。画面の下端に置くと
+ * そこに完全に隠れてしまうので、覆われない範囲を選べるようにしている。
+ */
+export type LabelPosition = "top" | "aboveRing" | "bottom";
 
 export type FrameOptions = {
   /** 描画に使う論理サイズ（CSSピクセル相当）。 */
@@ -34,8 +43,23 @@ export type FrameOptions = {
   background: CanvasImageSource | null;
   title: string;
   artist: string;
+  /** 文字の置き場所。 */
+  labelPosition: LabelPosition;
+  /**
+   * プレビューだけで、SNS の UI に隠れる範囲の目安を薄く描く。
+   * 書き出す映像には入れない。
+   */
+  guides?: boolean;
   ringState: RingState;
 };
+
+/**
+ * ショート動画でプラットフォームの UI に覆われる割合（高さ・幅に対する比）。
+ * YouTube ショートの実機を測った値。TikTok や Reels もおおむね同じ。
+ */
+const SHORTS_COVER_TOP = 0.12;
+const SHORTS_COVER_BOTTOM = 0.34;
+const SHORTS_COVER_RIGHT = 0.14;
 
 export function drawFrame(
   ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
@@ -129,9 +153,48 @@ export function drawFrame(
       context.fillStyle = "#ffffff";
       context.fillText(text, w / 2, y);
     };
-    if (cleanTitle) label(cleanTitle, 16, "600 16px 'Space Grotesk', sans-serif", h - (cleanArtist ? 46 : 28));
-    if (cleanArtist) label(cleanArtist, 13, "13px 'IBM Plex Mono', monospace", h - 22);
+    const shortest = Math.min(w, h);
+    // リングの針は外径の 1.6 倍ほどまで伸びる。その外側に置かないと
+    // 盛り上がりで文字に針が刺さる。
+    const ringClear = h / 2 - shortest * RING_OUTER_RATIO * 2.7;
+    const top =
+      options.labelPosition === "bottom"
+        ? h - (cleanTitle && cleanArtist ? 46 : 28)
+        : options.labelPosition === "top"
+          ? h * SHORTS_COVER_TOP
+          : Math.max(h * SHORTS_COVER_TOP, ringClear - (cleanTitle && cleanArtist ? 22 : 0));
+    // 下寄せのときだけ従来どおり曲名が上、それ以外は上から曲名→アーティスト名。
+    if (cleanTitle) label(cleanTitle, 16, "600 16px 'Space Grotesk', sans-serif", top);
+    if (cleanArtist) label(cleanArtist, 13, "13px 'IBM Plex Mono', monospace", cleanTitle ? top + 24 : top);
     context.textAlign = "start";
+  }
+
+  // SNS の UI に隠れる範囲の目安。プレビュー専用で、書き出しには入らない。
+  if (options.guides && h > w) {
+    context.save();
+    context.setLineDash([6, 5]);
+    context.lineWidth = 1;
+    context.strokeStyle = "rgba(255,255,255,.34)";
+    context.fillStyle = "rgba(0,0,0,.28)";
+    const bottom = h * (1 - SHORTS_COVER_BOTTOM);
+    const right = w * (1 - SHORTS_COVER_RIGHT);
+    context.fillRect(0, 0, w, h * SHORTS_COVER_TOP);
+    context.fillRect(0, bottom, w, h - bottom);
+    context.fillRect(right, h * SHORTS_COVER_TOP, w - right, bottom - h * SHORTS_COVER_TOP);
+    context.beginPath();
+    context.moveTo(0, h * SHORTS_COVER_TOP);
+    context.lineTo(w, h * SHORTS_COVER_TOP);
+    context.moveTo(0, bottom);
+    context.lineTo(w, bottom);
+    context.moveTo(right, h * SHORTS_COVER_TOP);
+    context.lineTo(right, bottom);
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = "rgba(255,255,255,.5)";
+    context.font = "9px 'IBM Plex Mono', monospace";
+    context.textAlign = "start";
+    context.fillText("SNSのUIで隠れる目安", 8, bottom + 12);
+    context.restore();
   }
   return metrics;
 }

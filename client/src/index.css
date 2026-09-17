@@ -30,3 +30,9 @@ button:active { transform:scale(.975); }
 .export-result p { margin: 9px 0; color: rgba(255,255,255,.64); font-size: 11px; line-height: 1.5; }
 .export-download-link { display: inline-flex; align-items: center; gap: 6px; color: #ff694a; font-size: 11px; font-weight: 600; text-decoration: none; }
 .export-download-link:hover { color: #ff927e; }
+
+/* 文字の位置とセーフゾーンの切り替え */
+.label-position-title { margin-top:16px; }
+.label-position-row { grid-template-columns:1fr 1fr 1fr; margin-bottom:0; }
+.guide-toggle { display:flex; align-items:center; justify-content:center; gap:6px; width:100%; margin:-12px 0 20px; padding:7px 5px; background:#111317; border:1px solid #292e35; color:#818791; font:9px "IBM Plex Mono",monospace; letter-spacing:.03em; }
+.guide-toggle svg { color:var(--coral); flex:none; }
