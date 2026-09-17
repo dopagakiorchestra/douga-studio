@@ -32,6 +32,9 @@ const styles = [
   { id: "orbit", label: "Orbit", icon: Sparkles, desc: "円形の音の軌道" },
 ];
 
+/** 既定のアーティスト名。 */
+const DEFAULT_ARTIST = "DOPAGAKI ORCHESTRA";
+
 /** 書き出し範囲の最短の長さ（秒）。 */
 const MIN_CLIP = 1;
 /**
@@ -74,7 +77,8 @@ export default function Home() {
   const [imageUrl, setImageUrl] = useState("");
   const [audioName, setAudioName] = useState("音源が選択されていません");
   const [title, setTitle] = useState("");
-  const [artist, setArtist] = useState("");
+  // 毎回打ち直さなくていいよう、既定でアーティスト名を入れておく。消せば空にできる。
+  const [artist, setArtist] = useState(DEFAULT_ARTIST);
   const [genre, setGenre] = useState("Instrumental");
   const [vizColor, setVizColor] = useState(RAINBOW);
   const [outerColor, setOuterColor] = useState(RAINBOW);
