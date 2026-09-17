@@ -61,6 +61,12 @@ const SHORTS_COVER_TOP = 0.12;
 const SHORTS_COVER_BOTTOM = 0.34;
 const SHORTS_COVER_RIGHT = 0.14;
 
+/**
+ * 上寄せのときに端から余分に下げる量（論理px、文字の半分ほど）。
+ * 上端ぴったりだと窮屈で、端末によっては字の頭が欠けて見える。
+ */
+const TOP_NUDGE = 5;
+
 export function drawFrame(
   ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   options: FrameOptions,
@@ -157,8 +163,8 @@ export function drawFrame(
     // リングの針は外径の 1.6 倍ほどまで伸びる。その外側に置かないと
     // 盛り上がりで文字に針が刺さる。
     const ringClear = h / 2 - shortest * RING_OUTER_RATIO * 2.7;
-    // 上寄せは下寄せと同じだけ端から離す。上下で余白が揃う。
-    const edge = cleanTitle && cleanArtist ? 22 : 28;
+    // 上寄せは下寄せと同じだけ端から離し、そこから文字の半分ほど下げる。
+    const edge = (cleanTitle && cleanArtist ? 22 : 28) + TOP_NUDGE;
     const top =
       options.labelPosition === "bottom"
         ? h - (cleanTitle && cleanArtist ? 46 : 28)
