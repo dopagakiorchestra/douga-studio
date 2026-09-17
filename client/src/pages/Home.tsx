@@ -95,7 +95,8 @@ export default function Home() {
   // Safari は WebM を録画できないため、iOS では既定を MP4 にする
   const isIOSDevice = typeof navigator !== "undefined" && (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
   const [format, setFormat] = useState<"webm" | "mp4">(isIOSDevice ? "mp4" : "webm");
-  const [aspect, setAspect] = useState<"landscape" | "portrait">("landscape");
+  // 既定はショート。いまの用途はほぼ 9:16 なので、毎回切り替えずに済む。
+  const [aspect, setAspect] = useState<"landscape" | "portrait">("portrait");
   // 既定はリングのすぐ上。画面の下端はショート動画だと
   // 共有ボタンや説明文に完全に隠れてしまう。
   const [labelPosition, setLabelPosition] = useState<LabelPosition>("aboveRing");
@@ -164,9 +165,14 @@ export default function Home() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const draw = (time: number) => {
-      const rect = canvas.getBoundingClientRect();
+      if (frame !== undefined) { window.clearTimeout(frame); frame = undefined; }
+      // キャンバスの寸法を先に合わせてから表示boxを測る。
+      // 表示boxの幅は canvas[height="1920"] を見る CSS で決まるので、
+      // 寸法を変える前に測ると切り替え前の幅を拾ってしまい、論理サイズが
+      // ずれる（文字の大きさや端からの距離が比率ごとに変わって見える）。
       const targetW = aspect === "portrait" ? 1080 : 1920, targetH = aspect === "portrait" ? 1920 : 1080;
       if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+      const rect = canvas.getBoundingClientRect();
       const analyser = analyserRef.current;
       const fft = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
       const timeData = analyser ? new Uint8Array(analyser.fftSize) : null;
@@ -200,8 +206,14 @@ export default function Home() {
       if (metrics) ringMetricsRef.current = metrics;
       if (playing) frame = window.setTimeout(() => draw(performance.now()), 33);
     };
+    // 表示boxが変わったら描き直す。比率の切り替えには CSS のトランジションが
+    // 挟まるうえ、停止中は描画ループが回っていないので、これが無いと
+    // 切り替え途中の寸法で描いた絵がそのまま残る。画面の回転や
+    // ウインドウのリサイズにも効く。
+    const observer = new ResizeObserver(() => draw(performance.now()));
+    observer.observe(canvas);
     draw(performance.now());
-    return () => { if (frame !== undefined) window.clearTimeout(frame); };
+    return () => { observer.disconnect(); if (frame !== undefined) window.clearTimeout(frame); };
   }, [playing, imageUrl, title, artist, labelPosition, showGuides, aspect, vizColor, outerColor, vizStyle, sensitivity, amplitude, wobble, lineWeight]);
 
   const handleAudio = async (file?: File) => {
